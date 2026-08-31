@@ -1,9 +1,9 @@
 import { ImageElement, PageElement, ShapeElement, StrokeElement } from "../src/document";
 import { InkPoint } from "../src/strokes";
 import { optimizeShape } from "../src/shapes";
-import { BoardRenderer } from "./renderer";
+import { BoardRenderer, SelectionHandle } from "./renderer";
 import { BoardStore } from "./store";
-import { BoardTool, CanvasOperation, boardBounds, elementSummary, lassoElements, scaleElement, translateElement, validBoard } from "./model";
+import { BoardTool, CanvasOperation, boardBounds, elementSummary, estimateTextHeight, isCanvasOperation, lassoElements, scaleElement, translateElement, validBoard } from "./model";
 import { registerWhiteboardTools } from "./webmcp";
 
 const icons: Record<string, string> = {
@@ -11,7 +11,9 @@ const icons: Record<string, string> = {
   pen: '<path d="M4 20l4-1 11-11-3-3L5 16z"/><path d="M14 7l3 3"/>', rectangle: '<rect x="4" y="5" width="16" height="14" rx="1"/>', ellipse: '<ellipse cx="12" cy="12" rx="8" ry="6"/>', arrow: '<path d="M4 12h15M14 7l5 5-5 5"/>',
   text: '<path d="M5 6V4h14v2M12 4v16M8 20h8"/>', image: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8" cy="9" r="1.5"/><path d="M4 17l5-5 4 4 2-2 5 4"/>', lasso: '<path d="M19 8c0-3-3-5-7-5S4 5 4 9s4 6 9 6c4 0 7-2 7-5M13 15c0 4-2 6-5 6-2 0-3-1-3-2s1-2 3-2c2 0 4 2 5 4"/>',
   eraser: '<path d="M7 19h12M4 14l8-9a2 2 0 013 0l4 4a2 2 0 010 3l-7 7H8l-4-3a2 2 0 010-2z"/>', undo: '<path d="M9 7l-5 5 5 5"/><path d="M5 12h8a6 6 0 016 6"/>', redo: '<path d="M15 7l5 5-5 5"/><path d="M19 12h-8a6 6 0 00-6 6"/>',
-  fit: '<path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/>', trash: '<path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"/>', check: '<path d="M5 12l4 4 10-10"/>', close: '<path d="M6 6l12 12M18 6L6 18"/>', send: '<path d="M4 4l17 8-17 8 3-8zM7 12h14"/>'
+  fit: '<path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/>', trash: '<path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"/>', check: '<path d="M5 12l4 4 10-10"/>', close: '<path d="M6 6l12 12M18 6L6 18"/>',
+  send: '<path d="M3 12h9M12 7v10M14 7l7 5-7 5z"/>', copy: '<rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V5a2 2 0 00-2-2H5a2 2 0 00-2 2v9a2 2 0 002 2h3"/>',
+  back: '<rect x="4" y="8" width="10" height="10" rx="1"/><path d="M10 8V4h10v10h-6"/>', front: '<rect x="10" y="4" width="10" height="10" rx="1"/><path d="M14 14v4H4V8h6"/>', minus: '<path d="M6 12h12"/>', plus: '<path d="M12 6v12M6 12h12"/>'
 };
 
 function icon(name: string): string { return `<svg viewBox="0 0 24 24" aria-hidden="true">${icons[name]}</svg>`; }
@@ -22,12 +24,14 @@ interface Interaction {
   mode: "pan" | "draw" | "shape" | "lasso" | "move" | "resize" | "erase";
   pointerId: number; startClient: { x: number; y: number }; startWorld: InkPoint; elementId?: string;
   before?: Map<string, PageElement>; beforeBounds?: { minX: number; minY: number; maxX: number; maxY: number }; checkpointed?: boolean;
+  additive?: boolean;
+  handle?: SelectionHandle;
 }
 
 export class WhiteboardApp {
   private readonly store = new BoardStore();
   private readonly canvas = byId<HTMLCanvasElement>("board");
-  private readonly renderer = new BoardRenderer(this.canvas, () => this.store.document.elements);
+  private readonly renderer = new BoardRenderer(this.canvas, () => this.store.document.elements, () => new Set(Object.values(this.store.document.connections ?? {}).map((connection) => connection.labelId).filter((id): id is string => Boolean(id))));
   private tool: BoardTool = "pen";
   private penColor = "#080808";
   private lassoPromptOpen = false;
@@ -41,7 +45,7 @@ export class WhiteboardApp {
   private readonly abort = new AbortController();
 
   constructor() {
-    this.bindToolbar(); this.bindCanvas(); this.bindKeyboard(); this.bindCollaboration(); this.bindFiles();
+    this.bindToolbar(); this.bindSelectionTools(); this.bindCanvas(); this.bindKeyboard(); this.bindCollaboration(); this.bindFiles();
     this.store.addEventListener("change", () => { this.renderer.request(); this.updateUi(); });
     this.renderer.request(); this.updateUi();
     void registerWhiteboardTools({ inspect: (scope) => this.inspect(scope), apply: (operations, revision) => this.applyAgentOperations(operations, revision), complete: (summary) => this.completeAgent(summary) }, this.abort.signal)
@@ -54,7 +58,7 @@ export class WhiteboardApp {
       const tool = button.dataset.tool as BoardTool; button.innerHTML = icon(tool); button.addEventListener("click", () => this.setTool(tool));
     });
     for (const [id, name, action] of [
-      ["undo", "undo", () => this.store.undo()], ["redo", "redo", () => this.store.redo()], ["fit", "fit", () => this.renderer.fitAll()], ["clear", "trash", () => this.clearBoard()]
+      ["undo", "undo", () => this.store.undo()], ["redo", "redo", () => this.store.redo()], ["fit", "fit", () => { this.renderer.fitAll(); this.updateContextPrompt(); }], ["clear", "trash", () => this.clearBoard()]
     ] as const) { const button = byId<HTMLButtonElement>(id); button.innerHTML = icon(name); button.addEventListener("click", action); }
     byId<HTMLButtonElement>("image-tool").addEventListener("click", () => this.imageInput.click());
     document.querySelectorAll<HTMLButtonElement>("[data-color]").forEach((button) => button.addEventListener("click", () => {
@@ -65,8 +69,18 @@ export class WhiteboardApp {
   }
 
   private setTool(tool: BoardTool): void {
-    this.tool = tool; this.canvas.dataset.tool = tool;
+    this.tool = tool; this.canvas.dataset.tool = tool; this.canvas.style.cursor = "";
     document.querySelectorAll<HTMLButtonElement>("[data-tool]").forEach((button) => button.classList.toggle("is-active", button.dataset.tool === tool));
+  }
+
+  private bindSelectionTools(): void {
+    for (const [id, name] of [["duplicate", "copy"], ["send-back", "back"], ["bring-front", "front"], ["text-smaller", "minus"], ["text-larger", "plus"], ["delete-selection", "trash"]] as const) byId<HTMLButtonElement>(id).innerHTML = icon(name);
+    byId<HTMLButtonElement>("duplicate").addEventListener("click", () => this.duplicateSelection());
+    byId<HTMLButtonElement>("send-back").addEventListener("click", () => this.reorderSelection("back"));
+    byId<HTMLButtonElement>("bring-front").addEventListener("click", () => this.reorderSelection("front"));
+    byId<HTMLButtonElement>("text-smaller").addEventListener("click", () => this.resizeSelectedText(-2));
+    byId<HTMLButtonElement>("text-larger").addEventListener("click", () => this.resizeSelectedText(2));
+    byId<HTMLButtonElement>("delete-selection").addEventListener("click", () => this.deleteSelection());
   }
 
   private bindCanvas(): void {
@@ -74,7 +88,7 @@ export class WhiteboardApp {
     this.canvas.addEventListener("pointermove", (event) => this.pointerMove(event));
     this.canvas.addEventListener("pointerup", (event) => this.pointerUp(event));
     this.canvas.addEventListener("pointercancel", (event) => this.pointerUp(event));
-    this.canvas.addEventListener("wheel", (event) => { event.preventDefault(); this.renderer.zoomAt(event.clientX, event.clientY, Math.exp(-event.deltaY * 0.0012)); this.updateZoom(); }, { passive: false });
+    this.canvas.addEventListener("wheel", (event) => { event.preventDefault(); this.renderer.zoomAt(event.clientX, event.clientY, Math.exp(-event.deltaY * 0.0012)); this.updateZoom(); this.updateContextPrompt(); }, { passive: false });
     this.canvas.addEventListener("dblclick", (event) => {
       if (this.tool !== "select") return; const point = this.renderer.world(event.clientX, event.clientY); const hit = this.renderer.hit(point);
       this.beginText(point, hit?.type === "text" ? hit : undefined);
@@ -94,7 +108,7 @@ export class WhiteboardApp {
       this.store.checkpoint(); const shape: ShapeElement = { type: "shape", id: uuid("shape"), kind: this.tool, points: [point, { ...point }], color: this.penColor, size: 3, closed: this.tool !== "arrow", fillColor: "#c0c0c0", fillOpacity: 0 };
       this.store.document.elements.push(shape); this.interaction = { mode: "shape", pointerId: event.pointerId, startClient: { x: event.clientX, y: event.clientY }, startWorld: point, elementId: shape.id }; this.renderer.request(); return;
     }
-    if (this.tool === "lasso") { this.renderer.lasso = [point]; this.interaction = { mode: "lasso", pointerId: event.pointerId, startClient: { x: event.clientX, y: event.clientY }, startWorld: point }; this.renderer.request(); return; }
+    if (this.tool === "lasso") { this.renderer.lasso = [point]; this.interaction = { mode: "lasso", pointerId: event.pointerId, startClient: { x: event.clientX, y: event.clientY }, startWorld: point, additive: event.shiftKey }; this.renderer.request(); return; }
     if (this.tool === "eraser") { this.interaction = { mode: "erase", pointerId: event.pointerId, startClient: { x: event.clientX, y: event.clientY }, startWorld: point }; this.erase(point); return; }
     if (this.tool === "text") { this.beginText(point); this.release(event); }
     else if (this.tool === "image") this.release(event);
@@ -102,21 +116,25 @@ export class WhiteboardApp {
 
   private startSelection(event: PointerEvent, point: InkPoint): void {
     const selected = this.store.document.elements.filter((element) => this.renderer.selectionIds.has(element.id));
-    if (selected.length > 0 && this.renderer.onResizeHandle(point)) {
-      this.interaction = { mode: "resize", pointerId: event.pointerId, startClient: { x: event.clientX, y: event.clientY }, startWorld: point, before: new Map(selected.map((element) => [element.id, structuredClone(element)])), beforeBounds: boardBounds(selected) ?? undefined }; return;
+    const handle = selected.length > 0 ? this.renderer.selectionHandleAt(point) : null;
+    if (handle) {
+      this.interaction = { mode: "resize", pointerId: event.pointerId, startClient: { x: event.clientX, y: event.clientY }, startWorld: point, before: new Map(selected.map((element) => [element.id, structuredClone(element)])), beforeBounds: boardBounds(selected) ?? undefined, handle }; return;
     }
     const hit = this.renderer.hit(point);
     if (!hit) { this.renderer.selectionIds.clear(); this.lassoPromptOpen = false; this.updateContextPrompt(); this.renderer.request(); return; }
+    this.lassoPromptOpen = false; this.updateContextPrompt();
     if (!event.shiftKey && !this.renderer.selectionIds.has(hit.id)) this.renderer.selectionIds = new Set([hit.id]);
     else if (event.shiftKey) this.renderer.selectionIds.has(hit.id) ? this.renderer.selectionIds.delete(hit.id) : this.renderer.selectionIds.add(hit.id);
     const elements = this.store.document.elements.filter((element) => this.renderer.selectionIds.has(element.id));
-    this.interaction = { mode: "move", pointerId: event.pointerId, startClient: { x: event.clientX, y: event.clientY }, startWorld: point, before: new Map(elements.map((element) => [element.id, structuredClone(element)])) }; this.renderer.request();
+    this.interaction = { mode: "move", pointerId: event.pointerId, startClient: { x: event.clientX, y: event.clientY }, startWorld: point, before: new Map(elements.map((element) => [element.id, structuredClone(element)])) }; this.updateContextPrompt(); this.renderer.request();
   }
 
   private pointerMove(event: PointerEvent): void {
-    const interaction = this.interaction; if (!interaction || interaction.pointerId !== event.pointerId) return; event.preventDefault();
+    const interaction = this.interaction;
+    if (!interaction) { if (this.tool === "select") this.canvas.style.cursor = this.resizeCursor(this.renderer.selectionHandleAt(this.renderer.world(event.clientX, event.clientY))); return; }
+    if (interaction.pointerId !== event.pointerId) return; event.preventDefault();
     const point = this.renderer.world(event.clientX, event.clientY);
-    if (interaction.mode === "pan") { this.renderer.camera.x += event.clientX - interaction.startClient.x; this.renderer.camera.y += event.clientY - interaction.startClient.y; interaction.startClient = { x: event.clientX, y: event.clientY }; this.renderer.request(); return; }
+    if (interaction.mode === "pan") { this.renderer.camera.x += event.clientX - interaction.startClient.x; this.renderer.camera.y += event.clientY - interaction.startClient.y; interaction.startClient = { x: event.clientX, y: event.clientY }; this.updateContextPrompt(); this.renderer.request(); return; }
     if (interaction.mode === "draw") {
       const stroke = this.store.document.elements.find((element): element is StrokeElement => element.id === interaction.elementId && element.type === "stroke"); if (!stroke) return;
       const samples = event.getCoalescedEvents?.() ?? [event]; for (const sample of samples) { const candidate = this.renderer.world(sample.clientX, sample.clientY); candidate.pressure = sample.pressure || 0.5; candidate.time = sample.timeStamp; stroke.points.push(candidate); } this.renderer.request(); return;
@@ -128,8 +146,10 @@ export class WhiteboardApp {
     if (!interaction.checkpointed && Math.hypot(dx, dy) > 1) { this.store.checkpoint(); interaction.checkpointed = true; }
     if (interaction.mode === "move" && interaction.before) {
       for (const [id, before] of interaction.before) { const index = this.store.document.elements.findIndex((element) => element.id === id); if (index >= 0) { this.store.document.elements[index] = structuredClone(before); translateElement(this.store.document.elements[index], dx, dy); } } this.renderer.request();
-    } else if (interaction.mode === "resize" && interaction.before && interaction.beforeBounds) {
-      const from = interaction.beforeBounds; const to = { minX: from.minX, minY: from.minY, maxX: Math.max(from.minX + 8, point.x), maxY: Math.max(from.minY + 8, point.y) };
+    } else if (interaction.mode === "resize" && interaction.before && interaction.beforeBounds && interaction.handle) {
+      const from = interaction.beforeBounds; const to = { minX: from.minX, minY: from.minY, maxX: from.maxX, maxY: from.maxY };
+      if (interaction.handle.includes("w")) to.minX = Math.min(point.x, to.maxX - 8); if (interaction.handle.includes("e")) to.maxX = Math.max(point.x, to.minX + 8);
+      if (interaction.handle.includes("n")) to.minY = Math.min(point.y, to.maxY - 8); if (interaction.handle.includes("s")) to.maxY = Math.max(point.y, to.minY + 8);
       for (const [id, before] of interaction.before) { const index = this.store.document.elements.findIndex((element) => element.id === id); if (index >= 0) { this.store.document.elements[index] = structuredClone(before); scaleElement(this.store.document.elements[index], from, to); } } this.renderer.request();
     }
   }
@@ -137,7 +157,9 @@ export class WhiteboardApp {
   private pointerUp(event: PointerEvent): void {
     const interaction = this.interaction; if (!interaction || interaction.pointerId !== event.pointerId) { this.release(event); return; }
     if (interaction.mode === "lasso") {
-      this.renderer.selectionIds = new Set(lassoElements(this.store.document.elements, this.renderer.lasso)); this.renderer.lasso = []; this.lassoPromptOpen = this.renderer.selectionIds.size > 0; this.setTool("select"); this.updateContextPrompt(); this.renderer.request();
+      const hits = lassoElements(this.store.document.elements, this.renderer.lasso);
+      this.renderer.selectionIds = interaction.additive ? new Set([...this.renderer.selectionIds, ...hits]) : new Set(hits);
+      this.renderer.lasso = []; this.lassoPromptOpen = this.renderer.selectionIds.size > 0; this.setTool("select"); this.updateContextPrompt(); this.renderer.request();
     } else if (interaction.mode === "draw") {
       const strokeIndex = this.store.document.elements.findIndex((element) => element.id === interaction.elementId);
       const stroke = this.store.document.elements[strokeIndex];
@@ -148,6 +170,11 @@ export class WhiteboardApp {
       this.store.changed();
     } else if (interaction.mode === "shape" || interaction.mode === "erase" || interaction.checkpointed) this.store.changed();
     this.interaction = null; this.release(event);
+  }
+
+  private resizeCursor(handle: SelectionHandle | null): string {
+    if (!handle) return "default"; if (handle === "n" || handle === "s") return "ns-resize"; if (handle === "e" || handle === "w") return "ew-resize";
+    return handle === "nw" || handle === "se" ? "nwse-resize" : "nesw-resize";
   }
 
   private release(event: PointerEvent): void { if (this.canvas.hasPointerCapture(event.pointerId)) this.canvas.releasePointerCapture(event.pointerId); }
@@ -162,9 +189,11 @@ export class WhiteboardApp {
     const input = document.createElement("textarea"); input.className = "text-editor"; input.setAttribute("aria-label", "Text auf dem Whiteboard"); input.rows = 1;
     const anchor = existing ? { x: existing.x, y: existing.baseline - existing.fontSize } : point;
     const screen = this.renderer.screen(anchor); const rect = this.canvas.getBoundingClientRect(); input.style.left = `${rect.left + screen.x}px`; input.style.top = `${rect.top + screen.y}px`; input.value = existing?.text ?? ""; document.body.appendChild(input); input.focus(); input.select();
-    const commit = (): void => { const text = input.value.trim(); input.remove(); if (!text) return; this.store.checkpoint();
-      if (existing) { const current = this.store.document.elements.find((element) => element.id === existing.id); if (current?.type === "text") { current.text = text; current.width = Math.max(80, text.length * current.fontSize * 0.58); } }
-      else { const fontSize = 32; this.store.document.elements.push({ type: "text", id: uuid("text"), x: point.x, baseline: point.y + fontSize, width: Math.max(120, text.length * fontSize * 0.58), fontSize, color: this.penColor, text }); }
+    input.style.width = `${Math.max(180, (existing?.width ?? 240) * this.renderer.camera.zoom)}px`; input.style.height = `${Math.max(58, (existing?.height ?? 72) * this.renderer.camera.zoom)}px`;
+    const commit = (): void => { const text = input.value.trim(); const editorRect = input.getBoundingClientRect(); input.remove(); if (!text) return; this.store.checkpoint();
+      const width = Math.max(80, editorRect.width / this.renderer.camera.zoom); const height = Math.max(40, editorRect.height / this.renderer.camera.zoom);
+      if (existing) { const current = this.store.document.elements.find((element) => element.id === existing.id); if (current?.type === "text") { current.text = text; current.width = width; current.height = Math.max(height, estimateTextHeight(text, width, current.fontSize)); } }
+      else { const fontSize = 32; this.store.document.elements.push({ type: "text", id: uuid("text"), x: point.x, baseline: point.y + fontSize, width, height: Math.max(height, estimateTextHeight(text, width, fontSize)), fontSize, color: this.penColor, text }); }
       this.store.changed(); };
     input.addEventListener("blur", commit, { once: true }); input.addEventListener("keydown", (event) => { if (event.key === "Escape") { input.value = ""; input.blur(); } if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); input.blur(); } });
   }
@@ -174,7 +203,7 @@ export class WhiteboardApp {
       const editing = event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement; if (editing) return;
       if (event.code === "Space") { event.preventDefault(); this.spaceDown = true; this.canvas.classList.add("is-panning"); }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") { event.preventDefault(); event.shiftKey ? this.store.redo() : this.store.undo(); }
-      if ((event.key === "Delete" || event.key === "Backspace") && this.renderer.selectionIds.size) { event.preventDefault(); this.store.checkpoint(); const ids = [...this.renderer.selectionIds]; this.store.applyOperation({ type: "delete", ids }, "human"); this.renderer.selectionIds.clear(); this.store.changed(); }
+      if ((event.key === "Delete" || event.key === "Backspace") && this.renderer.selectionIds.size) { event.preventDefault(); this.deleteSelection(); }
       const shortcuts: Partial<Record<string, BoardTool>> = { v: "select", h: "hand", p: "pen", r: "rectangle", o: "ellipse", a: "arrow", t: "text", l: "lasso", e: "eraser" };
       const shortcut = shortcuts[event.key.toLowerCase()]; if (shortcut && !event.ctrlKey && !event.metaKey) this.setTool(shortcut);
     });
@@ -209,6 +238,7 @@ export class WhiteboardApp {
 
   private async applyAgentOperations(operations: CanvasOperation[], baseRevision?: number): Promise<Record<string, unknown>> {
     if (!Array.isArray(operations) || operations.length === 0) return { ok: false, error: "No operations supplied" };
+    if (operations.length > 80 || operations.some((operation) => !isCanvasOperation(operation))) return { ok: false, error: "invalid_operations", instruction: "Use the operation schema exactly and keep coordinates finite." };
     if (baseRevision !== undefined && baseRevision !== this.store.document.revision) return { ok: false, error: "stale_revision", currentRevision: this.store.document.revision, instruction: "Inspect the whiteboard again before editing." };
     this.store.beginAgentContribution(); this.updateUi(); const created: string[] = [];
     for (const operation of operations.slice(0, 80)) { const ids = this.store.applyOperation(operation, "agent"); created.push(...ids); this.renderer.activeAgentIds = new Set([...this.renderer.activeAgentIds, ...ids]); this.store.changed(); await new Promise((resolve) => setTimeout(resolve, 90)); }
@@ -220,14 +250,30 @@ export class WhiteboardApp {
   }
 
   private clearBoard(): void { if (this.store.document.elements.length === 0 || !window.confirm("Gesamtes Whiteboard leeren?")) return; this.renderer.selectionIds.clear(); this.store.clear(); }
+  private selectedElements(): PageElement[] { return this.store.document.elements.filter((element) => this.renderer.selectionIds.has(element.id)); }
+  private duplicateSelection(): void {
+    const selected = this.selectedElements(); if (!selected.length) return; this.store.checkpoint(); const copies = selected.map((element) => { const copy = structuredClone(element); copy.id = uuid(element.type); translateElement(copy, 24, 24); return copy; });
+    this.store.document.elements.push(...copies); this.renderer.selectionIds = new Set(copies.map((element) => element.id)); this.lassoPromptOpen = false; this.store.changed();
+  }
+  private reorderSelection(direction: "front" | "back"): void { const ids = [...this.renderer.selectionIds]; if (!ids.length) return; this.store.checkpoint(); this.store.applyOperation({ type: "reorder", ids, direction }, "human"); this.store.changed(); }
+  private resizeSelectedText(delta: number): void {
+    const texts = this.selectedElements().filter((element): element is Extract<PageElement, { type: "text" }> => element.type === "text"); if (!texts.length) return; this.store.checkpoint();
+    for (const text of texts) { text.fontSize = Math.max(10, Math.min(180, text.fontSize + delta)); text.height = estimateTextHeight(text.text, text.width, text.fontSize); } this.store.changed();
+  }
+  private deleteSelection(): void {
+    const ids = [...this.renderer.selectionIds]; if (!ids.length) return; this.store.checkpoint(); this.store.applyOperation({ type: "delete", ids }, "human"); this.renderer.selectionIds.clear(); this.lassoPromptOpen = false; this.store.changed();
+  }
   private setStatus(text: string, duration = 0): void { this.status.textContent = text; if (duration) setTimeout(() => { if (this.status.textContent === text) this.status.textContent = ""; }, duration); }
   private updateUi(): void { this.review.hidden = !this.store.hasAgentContribution(); byId<HTMLSpanElement>("revision").textContent = `r${this.store.document.revision}`; this.updateZoom(); this.updateContextPrompt(); }
   private updateZoom(): void { byId<HTMLSpanElement>("zoom").textContent = `${Math.round(this.renderer.camera.zoom * 100)}%`; }
   private updateContextPrompt(): void {
-    const panel = byId<HTMLElement>("lasso-prompt"); const bounds = this.renderer.selectionBounds(); panel.hidden = !this.lassoPromptOpen || !bounds;
-    if (!bounds || panel.hidden) return;
+    const panel = byId<HTMLElement>("lasso-prompt"); const tools = byId<HTMLElement>("selection-tools"); const bounds = this.renderer.selectionBounds(); panel.hidden = !this.lassoPromptOpen || !bounds; tools.hidden = !bounds;
+    if (!bounds) return;
     const anchor = this.renderer.screen({ x: (bounds.minX + bounds.maxX) / 2, y: bounds.maxY });
-    panel.style.left = `${Math.max(220, Math.min(window.innerWidth - 220, anchor.x))}px`; panel.style.top = `${Math.min(window.innerHeight - 92, anchor.y + 18)}px`;
+    const top = this.renderer.screen({ x: (bounds.minX + bounds.maxX) / 2, y: bounds.minY });
+    tools.style.left = `${Math.max(170, Math.min(window.innerWidth - 170, top.x))}px`; tools.style.top = `${Math.max(72, top.y - 54)}px`;
+    tools.classList.toggle("has-text", this.selectedElements().some((element) => element.type === "text"));
+    if (!panel.hidden) { panel.style.left = `${Math.max(220, Math.min(window.innerWidth - 220, anchor.x))}px`; panel.style.top = `${Math.min(window.innerHeight - 92, anchor.y + 18)}px`; }
   }
 }
 

@@ -62,7 +62,20 @@ export function drawHighlight(context: CanvasRenderingContext2D, highlight: High
 
 export function drawText(context: CanvasRenderingContext2D, text: TextElement, fontFamily = "ui-sans-serif, system-ui, sans-serif"): void {
   context.save(); context.fillStyle = visibleInkColor(text.color); context.font = `${text.fontSize}px ${fontFamily}`;
-  context.textBaseline = "alphabetic"; context.fillText(text.text, text.x, text.baseline, text.width); context.restore();
+  context.textBaseline = "alphabetic";
+  const lines: string[] = [];
+  for (const paragraph of text.text.split("\n")) {
+    const words = paragraph.split(/\s+/).filter(Boolean); let line = "";
+    for (const word of words) {
+      const candidate = line ? `${line} ${word}` : word;
+      if (line && context.measureText(candidate).width > text.width) { lines.push(line); line = word; }
+      else line = candidate;
+    }
+    lines.push(line);
+  }
+  const lineHeight = text.fontSize * 1.22;
+  for (const [index, line] of lines.entries()) context.fillText(line, text.x, text.baseline + index * lineHeight);
+  context.restore();
 }
 
 export function drawBoardElement(context: CanvasRenderingContext2D, element: StrokeElement | ShapeElement | HighlightElement | TextElement, fontFamily?: string): void {

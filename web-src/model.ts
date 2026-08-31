@@ -15,6 +15,7 @@ export interface WhiteboardDocument {
   elements: PageElement[];
   agentElementIds: string[];
   request: CollaborationRequest | null;
+  connections?: Record<string, { fromId: string; toId: string; labelId?: string }>;
 }
 
 export type BoardTool = "select" | "hand" | "pen" | "rectangle" | "ellipse" | "arrow" | "text" | "image" | "lasso" | "eraser";
@@ -27,9 +28,34 @@ export type CanvasOperation =
   | { type: "translate"; ids: string[]; dx: number; dy: number }
   | { type: "resize"; id: string; x: number; y: number; width: number; height: number }
   | { type: "update_text"; id: string; text: string }
+  | { type: "update_style"; ids: string[]; color?: string; strokeWidth?: number; fillColor?: string; fillOpacity?: number; fontSize?: number }
+  | { type: "reorder"; ids: string[]; direction: "front" | "back" }
+  | { type: "connect"; id?: string; fromId: string; toId: string; label?: string }
   | { type: "delete"; ids: string[] };
 
-export const emptyBoard = (): WhiteboardDocument => ({ version: 1, revision: 0, elements: [], agentElementIds: [], request: null });
+const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+const ids = (value: unknown): value is string[] => Array.isArray(value) && value.every((item) => typeof item === "string");
+const position = (value: unknown): value is { x: number; y: number } => Boolean(value) && typeof value === "object" && finite((value as { x?: unknown }).x) && finite((value as { y?: unknown }).y);
+
+export function isCanvasOperation(value: unknown): value is CanvasOperation {
+  if (!value || typeof value !== "object") return false; const operation = value as Record<string, unknown>;
+  switch (operation.type) {
+    case "create_text": return finite(operation.x) && finite(operation.y) && typeof operation.text === "string";
+    case "create_shape": return (operation.kind === "rectangle" || operation.kind === "ellipse") && finite(operation.x) && finite(operation.y) && finite(operation.width) && finite(operation.height);
+    case "create_arrow": return position(operation.from) && position(operation.to);
+    case "create_stroke": return Array.isArray(operation.points) && operation.points.length > 1 && operation.points.every(position);
+    case "translate": return ids(operation.ids) && finite(operation.dx) && finite(operation.dy);
+    case "resize": return typeof operation.id === "string" && finite(operation.x) && finite(operation.y) && finite(operation.width) && finite(operation.height);
+    case "update_text": return typeof operation.id === "string" && typeof operation.text === "string";
+    case "update_style": return ids(operation.ids);
+    case "reorder": return ids(operation.ids) && (operation.direction === "front" || operation.direction === "back");
+    case "connect": return typeof operation.fromId === "string" && typeof operation.toId === "string";
+    case "delete": return ids(operation.ids);
+    default: return false;
+  }
+}
+
+export const emptyBoard = (): WhiteboardDocument => ({ version: 1, revision: 0, elements: [], agentElementIds: [], request: null, connections: {} });
 
 export function cloneBoard(document: WhiteboardDocument): WhiteboardDocument { return structuredClone(document); }
 
@@ -58,7 +84,7 @@ export function scaleElement(element: PageElement, from: { minX: number; minY: n
     element.points.forEach(point); element.size *= Math.sqrt(Math.abs(sx * sy));
   } else if (element.type === "text") {
     element.x = to.minX + (element.x - from.minX) * sx; element.baseline = to.minY + (element.baseline - from.minY) * sy;
-    element.width *= sx; element.fontSize *= Math.sqrt(Math.abs(sx * sy));
+    element.width *= sx; if (element.height !== undefined) element.height *= sy; element.fontSize *= Math.sqrt(Math.abs(sx * sy));
   } else if (element.type === "image") {
     element.x = to.minX + (element.x - from.minX) * sx; element.y = to.minY + (element.y - from.minY) * sy;
     element.width *= sx; element.height *= sy;
@@ -77,18 +103,25 @@ function id(prefix: string): string { return `${prefix}-${crypto.randomUUID()}`;
 export function operationElement(operation: Extract<CanvasOperation, { type: "create_text" | "create_shape" | "create_arrow" | "create_stroke" }>): PageElement {
   if (operation.type === "create_text") {
     const fontSize = Math.max(12, Math.min(160, operation.fontSize ?? 32));
-    return { type: "text", id: operation.id ?? id("text"), x: operation.x, baseline: operation.y + fontSize, width: operation.width ?? Math.max(80, operation.text.length * fontSize * 0.58), fontSize, color: "#000000", text: operation.text } satisfies TextElement;
+    const width = operation.width ?? Math.max(80, Math.min(520, operation.text.length * fontSize * 0.58));
+    return { type: "text", id: operation.id ?? id("text"), x: operation.x, baseline: operation.y + fontSize, width, height: estimateTextHeight(operation.text, width, fontSize), fontSize, color: "#000000", text: operation.text } satisfies TextElement;
   }
   if (operation.type === "create_arrow") return { type: "shape", id: operation.id ?? id("arrow"), kind: "arrow", points: [{ ...operation.from, pressure: 0.5 }, { ...operation.to, pressure: 0.5 }], color: "#000000", size: 3, closed: false } satisfies ShapeElement;
   if (operation.type === "create_stroke") return { type: "stroke", id: operation.id ?? id("stroke"), color: "#000000", size: operation.size ?? 3, pressureSensitivity: 0.65, points: operation.points.map((point) => ({ ...point, pressure: point.pressure ?? 0.5 })) };
   return { type: "shape", id: operation.id ?? id("shape"), kind: operation.kind, points: [{ x: operation.x, y: operation.y, pressure: 0.5 }, { x: operation.x + operation.width, y: operation.y + operation.height, pressure: 0.5 }], color: "#000000", size: 3, closed: true, fillColor: "#c0c0c0", fillOpacity: operation.filled ? 0.3 : 0 } satisfies ShapeElement;
 }
 
+export function estimateTextHeight(text: string, width: number, fontSize: number): number {
+  const approximateCharacters = Math.max(1, Math.floor(width / (fontSize * 0.56)));
+  const lines = text.split("\n").reduce((total, paragraph) => total + Math.max(1, Math.ceil(paragraph.length / approximateCharacters)), 0);
+  return Math.max(fontSize * 1.2, lines * fontSize * 1.22);
+}
+
 export function elementSummary(element: PageElement): Record<string, unknown> {
   const bounds = elementBounds(element); const base = { id: element.id, type: element.type, bounds };
-  if (element.type === "text") return { ...base, text: element.text, fontSize: element.fontSize };
-  if (element.type === "shape") return { ...base, kind: element.kind, points: element.points };
-  if (element.type === "stroke") return { ...base, points: element.points, size: element.size };
+  if (element.type === "text") return { ...base, text: element.text, fontSize: element.fontSize, color: element.color, width: element.width, height: element.height };
+  if (element.type === "shape") return { ...base, kind: element.kind, points: element.points, color: element.color, strokeWidth: element.size, fillColor: element.fillColor, fillOpacity: element.fillOpacity ?? 0 };
+  if (element.type === "stroke") return { ...base, points: element.points, color: element.color, strokeWidth: element.size };
   if (element.type === "image") return { ...base, sourceName: element.sourceName ?? "image" };
   return base;
 }
@@ -105,6 +138,40 @@ export function pointInPolygon(point: InkPoint, polygon: InkPoint[]): boolean {
 export function lassoElements(elements: PageElement[], polygon: InkPoint[]): string[] {
   return elements.filter((element) => {
     const box = elementBounds(element); const centre = { x: (box.minX + box.maxX) / 2, y: (box.minY + box.maxY) / 2, pressure: 0.5 };
-    return pointInPolygon(centre, polygon) || polygon.some((point) => point.x >= box.minX && point.x <= box.maxX && point.y >= box.minY && point.y <= box.maxY);
+    const corners = [
+      { x: box.minX, y: box.minY, pressure: 0.5 }, { x: box.maxX, y: box.minY, pressure: 0.5 },
+      { x: box.maxX, y: box.maxY, pressure: 0.5 }, { x: box.minX, y: box.maxY, pressure: 0.5 }
+    ];
+    if (pointInPolygon(centre, polygon) || corners.some((point) => pointInPolygon(point, polygon)) || polygon.some((point) => point.x >= box.minX && point.x <= box.maxX && point.y >= box.minY && point.y <= box.maxY)) return true;
+    const elementPoints = element.type === "stroke" || element.type === "shape" ? element.points : corners;
+    if (elementPoints.some((point) => pointInPolygon(point, polygon))) return true;
+    const edges = corners.map((point, index) => [point, corners[(index + 1) % corners.length]] as const);
+    for (let index = 0; index < polygon.length; index += 1) {
+      const a = polygon[index]; const b = polygon[(index + 1) % polygon.length];
+      if (edges.some(([left, right]) => segmentsIntersect(a, b, left, right))) return true;
+      for (let pathIndex = 1; pathIndex < elementPoints.length; pathIndex += 1) if (segmentsIntersect(a, b, elementPoints[pathIndex - 1], elementPoints[pathIndex])) return true;
+    }
+    return false;
   }).map((element) => element.id);
+}
+
+function segmentsIntersect(a: InkPoint, b: InkPoint, c: InkPoint, d: InkPoint): boolean {
+  const cross = (left: InkPoint, middle: InkPoint, right: InkPoint): number => (middle.x - left.x) * (right.y - left.y) - (middle.y - left.y) * (right.x - left.x);
+  const abC = cross(a, b, c); const abD = cross(a, b, d); const cdA = cross(c, d, a); const cdB = cross(c, d, b);
+  const overlaps = Math.max(Math.min(a.x, b.x), Math.min(c.x, d.x)) <= Math.min(Math.max(a.x, b.x), Math.max(c.x, d.x))
+    && Math.max(Math.min(a.y, b.y), Math.min(c.y, d.y)) <= Math.min(Math.max(a.y, b.y), Math.max(c.y, d.y));
+  return overlaps && ((abC <= 0 && abD >= 0) || (abC >= 0 && abD <= 0)) && ((cdA <= 0 && cdB >= 0) || (cdA >= 0 && cdB <= 0));
+}
+
+export function connectionPoints(from: PageElement, to: PageElement): { from: InkPoint; to: InkPoint } {
+  const a = elementBounds(from); const b = elementBounds(to);
+  const ac = { x: (a.minX + a.maxX) / 2, y: (a.minY + a.maxY) / 2, pressure: 0.5 };
+  const bc = { x: (b.minX + b.maxX) / 2, y: (b.minY + b.maxY) / 2, pressure: 0.5 };
+  const anchor = (box: typeof a, start: InkPoint, target: InkPoint): InkPoint => {
+    const dx = target.x - start.x; const dy = target.y - start.y;
+    const tx = Math.abs(dx) < 0.001 ? Infinity : (box.maxX - box.minX) / 2 / Math.abs(dx);
+    const ty = Math.abs(dy) < 0.001 ? Infinity : (box.maxY - box.minY) / 2 / Math.abs(dy);
+    const scale = Math.min(tx, ty); return { x: start.x + dx * scale, y: start.y + dy * scale, pressure: 0.5 };
+  };
+  return { from: anchor(a, ac, bc), to: anchor(b, bc, ac) };
 }

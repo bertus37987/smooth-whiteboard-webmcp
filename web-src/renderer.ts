@@ -3,6 +3,8 @@ import { InkPoint } from "../src/strokes";
 import { cachedImage, drawBoardElement } from "../src/rendering";
 import { Camera, boardBounds } from "./model";
 
+export type SelectionHandle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
+
 export class BoardRenderer {
   readonly camera: Camera = { x: window.innerWidth / 2, y: window.innerHeight / 2, zoom: 1 };
   selectionIds = new Set<string>();
@@ -11,7 +13,7 @@ export class BoardRenderer {
   private frame = 0;
   private resizeObserver: ResizeObserver;
 
-  constructor(readonly canvas: HTMLCanvasElement, private readonly elements: () => PageElement[]) {
+  constructor(readonly canvas: HTMLCanvasElement, private readonly elements: () => PageElement[], private readonly connectionLabelIds: () => Set<string> = () => new Set()) {
     this.resizeObserver = new ResizeObserver(() => this.request()); this.resizeObserver.observe(canvas);
   }
 
@@ -52,9 +54,14 @@ export class BoardRenderer {
     }) ?? null;
   }
 
-  onResizeHandle(point: InkPoint): boolean {
-    const bounds = this.selectionBounds(); if (!bounds) return false; const radius = 14 / this.camera.zoom;
-    return Math.hypot(point.x - bounds.maxX, point.y - bounds.maxY) <= radius;
+  selectionHandleAt(point: InkPoint): SelectionHandle | null {
+    const bounds = this.selectionBounds(); if (!bounds) return null; const radius = 12 / this.camera.zoom;
+    const midX = (bounds.minX + bounds.maxX) / 2; const midY = (bounds.minY + bounds.maxY) / 2;
+    const handles: Array<[SelectionHandle, number, number]> = [
+      ["nw", bounds.minX, bounds.minY], ["n", midX, bounds.minY], ["ne", bounds.maxX, bounds.minY], ["e", bounds.maxX, midY],
+      ["se", bounds.maxX, bounds.maxY], ["s", midX, bounds.maxY], ["sw", bounds.minX, bounds.maxY], ["w", bounds.minX, midY]
+    ];
+    return handles.find(([, x, y]) => Math.hypot(point.x - x, point.y - y) <= radius)?.[0] ?? null;
   }
 
   private drawGrid(context: CanvasRenderingContext2D, width: number, height: number): void {
@@ -74,6 +81,7 @@ export class BoardRenderer {
     context.setTransform(ratio, 0, 0, ratio, 0, 0); context.clearRect(0, 0, rect.width, rect.height); this.drawGrid(context, rect.width, rect.height);
     context.save(); context.translate(this.camera.x, this.camera.y); context.scale(this.camera.zoom, this.camera.zoom);
     for (const element of this.elements()) {
+      if (this.connectionLabelIds().has(element.id) && element.type === "text") this.drawConnectionLabel(context, element);
       if (element.type === "image") {
         const image = cachedImage(element, () => this.request()); if (image.complete && image.naturalWidth > 0) context.drawImage(image, element.x, element.y, element.width, element.height);
       } else drawBoardElement(context, element);
@@ -88,11 +96,24 @@ export class BoardRenderer {
     context.setLineDash([6 / this.camera.zoom, 5 / this.camera.zoom]); context.strokeRect(box.minX - pad, box.minY - pad, box.maxX - box.minX + pad * 2, box.maxY - box.minY + pad * 2); context.restore();
   }
 
+  private drawConnectionLabel(context: CanvasRenderingContext2D, element: Extract<PageElement, { type: "text" }>): void {
+    const box = elementBounds(element); const padX = 8; const padY = 5; const radius = 9;
+    const x = box.minX - padX; const y = box.minY - padY; const width = box.maxX - box.minX + padX * 2; const height = box.maxY - box.minY + padY * 2;
+    context.save(); context.fillStyle = "rgba(255,255,255,.98)"; context.strokeStyle = "rgba(8,8,8,.16)"; context.lineWidth = 1 / this.camera.zoom;
+    context.shadowColor = "rgba(8,8,8,.08)"; context.shadowBlur = 10 / this.camera.zoom; context.beginPath(); context.roundRect(x, y, width, height, radius); context.fill();
+    context.shadowColor = "transparent"; context.stroke(); context.restore();
+  }
+
   private drawSelection(context: CanvasRenderingContext2D): void {
-    const box = this.selectionBounds(); if (!box) return; const pad = 7 / this.camera.zoom; const handle = 9 / this.camera.zoom;
+    const box = this.selectionBounds(); if (!box) return; const pad = 7 / this.camera.zoom; const handle = 7 / this.camera.zoom;
     context.save(); context.strokeStyle = "#000000"; context.lineWidth = 1.5 / this.camera.zoom; context.setLineDash([5 / this.camera.zoom, 4 / this.camera.zoom]);
     context.strokeRect(box.minX - pad, box.minY - pad, box.maxX - box.minX + pad * 2, box.maxY - box.minY + pad * 2); context.setLineDash([]);
-    context.fillStyle = "#ffffff"; context.strokeStyle = "#000000"; context.fillRect(box.maxX - handle / 2, box.maxY - handle / 2, handle, handle); context.strokeRect(box.maxX - handle / 2, box.maxY - handle / 2, handle, handle); context.restore();
+    const midX = (box.minX + box.maxX) / 2; const midY = (box.minY + box.maxY) / 2;
+    context.fillStyle = "#ffffff"; context.strokeStyle = "#000000";
+    for (const [x, y] of [[box.minX, box.minY], [midX, box.minY], [box.maxX, box.minY], [box.maxX, midY], [box.maxX, box.maxY], [midX, box.maxY], [box.minX, box.maxY], [box.minX, midY]]) {
+      context.beginPath(); context.arc(x, y, handle / 2, 0, Math.PI * 2); context.fill(); context.stroke();
+    }
+    context.restore();
   }
 
   private drawLasso(context: CanvasRenderingContext2D): void {

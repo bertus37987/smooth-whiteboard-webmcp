@@ -2,6 +2,8 @@
 
 Human and AI working together at the same whiteboard.
 
+**Live app:** https://bertus37987.github.io/smooth-whiteboard-webmcp/
+
 This project turns the existing Smooth Handwriting vector canvas into a standalone, cross-platform WebMCP application. The browser app is the primary runtime for the OpenAI Developers WebMCP Challenge; the existing Obsidian extension remains available as a secondary adapter.
 
 ## What works
@@ -9,19 +11,21 @@ This project turns the existing Smooth Handwriting vector canvas into a standalo
 - Infinite, coordinate-based canvas with cursor-centred zoom and free pan
 - Low-latency freehand input using coalesced pointer events; no handwriting model runs while the pen is down
 - Rectangle, ellipse, arrow, text, image and eraser tools
-- Selection, multi-element lasso, moving, proportional group resizing and deletion
+- Selection, edge-aware multi-element lasso, moving, eight-handle group resizing, duplication, layer ordering and deletion
+- Custom multi-line text boxes that can be freely dragged, resized, restyled and edited by double-clicking
+- Smart labelled connectors that stay attached to object edges when either endpoint moves or resizes
 - Undo, redo, local browser persistence and JSON import/export
 - Human instruction bound to the current lasso selection or the complete board
 - Progressive agent operations against the latest board revision
 - Human-editable agent output with a single Accept / Undo decision
-- Minimal black, white and grey interface with semantic controls and no logo or filler content
+- Rounded pen-first black, white and grey interface with semantic controls, contextual selection actions and no logo or filler content
 
 ## WebMCP interface
 
 The app registers three meaningful tools through `document.modelContext`:
 
 1. `inspect_whiteboard` returns the latest revision, viewport, pending human instruction, selection bounds and editable elements.
-2. `apply_whiteboard_changes` creates, moves, resizes, edits or deletes objects progressively. A stale `baseRevision` is rejected so an agent cannot overwrite newer human work.
+2. `apply_whiteboard_changes` creates, connects, moves, resizes, styles, reorders, edits or deletes objects progressively. A stale `baseRevision` is rejected so an agent cannot overwrite newer human work.
 3. `complete_whiteboard_contribution` ends a contribution and exposes Accept / Undo to the human.
 
 The board state—not an agent's previous output—is always the source of truth. Agent-created items are normal canvas items, so the human can move, resize, rewrite or remove them before the next inspection.

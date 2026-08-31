@@ -13,6 +13,8 @@ export interface TextElement {
   x: number;
   baseline: number;
   width: number;
+  /** Custom text-box height. Older documents derive it from fontSize. */
+  height?: number;
   fontSize: number;
   color: string;
   text: string;
@@ -269,11 +271,12 @@ export function elementBounds(element: PageElement): { minX: number; minY: numbe
     return { minX: element.x, minY: element.y, maxX: element.x + element.width, maxY: element.y + element.height };
   }
   if (element.type === "text") {
+    const height = element.height ?? element.fontSize * 1.2;
     return {
       minX: element.x,
       minY: element.baseline - element.fontSize,
       maxX: element.x + element.width,
-      maxY: element.baseline + element.fontSize * 0.2
+      maxY: element.baseline - element.fontSize + height
     };
   }
   if (element.type === "highlight") {

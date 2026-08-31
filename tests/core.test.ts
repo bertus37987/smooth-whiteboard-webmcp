@@ -5,7 +5,8 @@ import { normalizeHandwritingWord } from "../src/handwriting-normalizer";
 import { draggedShapePoints, optimizeShape, shapeContainsPoint } from "../src/shapes";
 import { snapHighlightToWords, wordBoxes } from "../src/smart-highlight";
 import { InkPoint, InkStroke, beautifyStroke, modelCapturedStroke, pressureWidth, visibleInkColor } from "../src/strokes";
-import { lassoElements, operationElement, scaleElement, translateElement } from "../web-src/model";
+import { connectionPoints, estimateTextHeight, isCanvasOperation, lassoElements, operationElement, scaleElement, translateElement } from "../web-src/model";
+import { BoardStore } from "../web-src/store";
 
 const point = (x: number, y: number): InkPoint => ({ x, y, pressure: 0.5 });
 const stroke = (points: InkPoint[]): InkStroke => ({ id: "stroke", color: "#111", size: 4, points });
@@ -57,13 +58,41 @@ assert.ok(modeled.every((candidate) => Number.isFinite(candidate.x) && Number.is
 const webText = operationElement({ type: "create_text", id: "web-text", x: 20, y: 30, text: "Editable", fontSize: 24 });
 translateElement(webText, 40, 10);
 const movedWebText = elementBounds(webText);
-assert.deepEqual([movedWebText.minX, movedWebText.minY, movedWebText.maxY], [60, 40, 68.8], "web elements retain the existing shared geometry model while moving");
+assert.deepEqual([movedWebText.minX, movedWebText.minY, movedWebText.maxY], [60, 40, 69.28], "web elements retain the existing shared geometry model while moving");
 assert.ok(Math.abs(movedWebText.maxX - 171.36) < 0.001);
 const beforeScale = elementBounds(webText);
 scaleElement(webText, beforeScale, { minX: 0, minY: 0, maxX: 222.72, maxY: 57.6 });
 assert.equal(Math.round(webText.type === "text" ? webText.fontSize : 0), 48, "agent-created text remains resizable by the human selection tool");
 const lassoTarget = operationElement({ type: "create_shape", id: "lasso-target", kind: "rectangle", x: 100, y: 100, width: 80, height: 60 });
 assert.deepEqual(lassoElements([lassoTarget], [point(80, 80), point(200, 80), point(200, 180), point(80, 180)]), ["lasso-target"], "lasso selects ordinary shared canvas objects");
+assert.deepEqual(lassoElements([lassoTarget], [point(95, 90), point(105, 90), point(105, 170), point(95, 170)]), ["lasso-target"], "lasso catches a crossed edge even when it misses the object centre");
+const connectedTarget = operationElement({ type: "create_shape", id: "connected-target", kind: "rectangle", x: 300, y: 100, width: 80, height: 60 });
+const connected = connectionPoints(lassoTarget, connectedTarget);
+assert.deepEqual([connected.from.x, connected.to.x], [180, 300], "agent connections terminate at object edges instead of crossing their centres");
+assert.ok(estimateTextHeight("eine längere mehrzeilige Textbox", 120, 24) > 24 * 1.2, "custom text boxes derive multiple visual lines from their width");
+assert.equal(isCanvasOperation({ type: "connect", fromId: "a", toId: "b" }), true);
+assert.equal(isCanvasOperation({ type: "translate", ids: ["a"], dx: Number.NaN, dy: 2 }), false, "invalid agent geometry is rejected before it reaches the board");
+
+const storedBoards = new Map<string, string>();
+Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
+  getItem: (key: string) => storedBoards.get(key) ?? null,
+  setItem: (key: string, value: string) => storedBoards.set(key, value)
+} });
+const connectedStore = new BoardStore();
+connectedStore.applyOperation({ type: "create_shape", id: "source", kind: "rectangle", x: 0, y: 0, width: 100, height: 80 }, "agent");
+connectedStore.applyOperation({ type: "create_shape", id: "target", kind: "ellipse", x: 300, y: 0, width: 100, height: 80 }, "agent");
+connectedStore.applyOperation({ type: "connect", id: "link", fromId: "source", toId: "target", label: "dynamic" }, "agent");
+connectedStore.changed();
+const initialLink = connectedStore.document.elements.find((element) => element.id === "link");
+assert.equal(initialLink?.type === "shape" ? initialLink.points[0].x : -1, 100);
+connectedStore.applyOperation({ type: "translate", ids: ["source"], dx: 50, dy: 40 }, "human");
+connectedStore.changed();
+const movedLink = connectedStore.document.elements.find((element) => element.id === "link");
+assert.equal(movedLink?.type === "shape" ? movedLink.points[0].x : -1, 150, "smart connector follows a moved endpoint and remains attached to its edge");
+connectedStore.applyOperation({ type: "delete", ids: ["target"] }, "human");
+connectedStore.changed();
+assert.equal(connectedStore.document.elements.some((element) => element.id === "link"), false, "deleting a connected node removes its dangling connector");
+assert.equal(connectedStore.document.agentElementIds.includes("link"), false, "removed connector no longer appears in the agent contribution metadata");
 
 assert.equal(optimizeShape(stroke([point(0, 1), point(30, -1), point(60, 2), point(100, 0)])).kind, "line");
 assert.equal(optimizeShape(stroke(modelCapturedStroke([point(0, 1), point(30, -1), point(60, 2), point(100, 0)], true))).kind, "line", "ink modeling keeps an intentional straight-line gesture recognizable");
