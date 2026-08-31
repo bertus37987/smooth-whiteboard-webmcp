@@ -1,0 +1,31 @@
+{
+  "name": "smooth-whiteboard-webmcp",
+  "version": "0.8.0",
+  "description": "An infinite shared WebMCP whiteboard where humans and browser agents edit the same visual artifact.",
+  "main": "main.js",
+  "scripts": {
+    "build": "node esbuild.mjs production",
+    "dev": "node esbuild.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node scripts/test.mjs"
+    ,"web:build": "node web-esbuild.mjs --production"
+    ,"web:dev": "node web-esbuild.mjs"
+  },
+  "keywords": [
+    "obsidian",
+    "handwriting",
+    "stylus",
+    "apple-pencil",
+    "math"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "esbuild": "^0.28.2",
+    "obsidian": "^1.13.1",
+    "typescript": "^5.9.2"
+  },
+  "dependencies": {
+    "ink-stroke-modeler-ts": "https://github.com/WhiteboardCX/ink-stroke-modeler-ts/archive/240d80f2c78c2f70317b498d37564f90fcddfe0c.tar.gz"
+  }
+}
