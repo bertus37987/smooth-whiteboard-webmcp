@@ -72,7 +72,7 @@ export class WhiteboardApp {
     this.store.addEventListener("change", () => { this.renderer.request(); this.updateUi(); });
     this.renderer.request(); this.updateUi();
     void registerWhiteboardTools({ session: () => this.session(), waitForTurn: (timeout) => this.waitForTurn(timeout), inspect: (scope) => this.inspect(scope), focus: (bounds) => this.focus(bounds), publishPlan: (summary, lease) => this.publishPlan(summary, lease), apply: (operations, revision, lease) => this.applyAgentOperations(operations, revision, 160, 35, lease), compose: (input, revision, lease) => this.composeAgentVisual(input, revision, lease), complete: (summary, lease) => this.completeAgent(summary, lease) }, this.abort.signal)
-      .then((available) => this.setStatus(available ? "WebMCP bereit" : "Browser ohne WebMCP – Zeichnen bleibt vollständig verfügbar", 2600))
+      .then((available) => this.setStatus(available ? "WebMCP ready" : "Browser without WebMCP – drawing remains available", 2600))
       .catch(() => this.setStatus("WebMCP konnte nicht registriert werden", 2600));
   }
 
@@ -153,7 +153,7 @@ export class WhiteboardApp {
     if (event.button !== 0 && event.button !== 1 && !stylusEraser) return; event.preventDefault(); this.canvas.setPointerCapture(event.pointerId);
     const point = this.renderer.world(event.clientX, event.clientY); const pan = event.button === 1 || this.spaceDown || this.tool === "hand" || event.pointerType === "touch";
     if (pan) { this.interaction = { mode: "pan", pointerId: event.pointerId, startClient: { x: event.clientX, y: event.clientY }, startWorld: point }; return; }
-    if (this.store.hasAgentContribution() && this.tool !== "select") { this.setStatus("Vorschlag zuerst annehmen oder ablehnen", 1800); this.release(event); return; }
+    if (this.store.hasAgentContribution() && this.tool !== "select") { this.setStatus("Accept or reject the proposal first", 1800); this.release(event); return; }
     if (stylusEraser) { this.interaction = { mode: "erase", pointerId: event.pointerId, startClient: { x: event.clientX, y: event.clientY }, startWorld: point }; this.erase(point); return; }
     if (this.tool === "select") { this.startSelection(event, point); return; }
     if (this.tool === "pen") {
@@ -307,18 +307,18 @@ export class WhiteboardApp {
   }
 
   private beginText(point: InkPoint, existing?: Extract<PageElement, { type: "text" }>, initialStyle: Extract<PageElement, { type: "text" }>["blockStyle"] = "body", sticky = false): void {
-    if (this.store.hasAgentContribution()) { this.setStatus("Vorschlag zuerst annehmen oder ablehnen", 1800); return; }
+    if (this.store.hasAgentContribution()) { this.setStatus("Accept or reject the proposal first", 1800); return; }
     const shell = document.createElement("div"); shell.className = "text-editor-shell"; const controls = document.createElement("div"); controls.className = "text-controls";
     const select = (label: string, values: Array<[string, string]>, current: string): HTMLSelectElement => { const element = document.createElement("select"); element.setAttribute("aria-label", label); for (const [value, text] of values) { const option = document.createElement("option"); option.value = value; option.textContent = text; element.appendChild(option); } element.value = current; return element; };
-    const style = select("Textstil", [["body", "Text"], ["heading-1", "Titel"], ["heading-2", "Überschrift"], ["heading-3", "Zwischentitel"], ["bullet", "Stichpunkte"], ["numbered", "Nummeriert"], ["check", "Checkliste"], ["quote", "Zitat"], ["code", "Code"], ["math", "Mathe"]], existing?.blockStyle ?? initialStyle ?? "body");
-    const family = select("Schriftart", [["sans", "Sans"], ["serif", "Serif"], ["mono", "Mono"], ["handwriting", "Handschrift"]], existing?.fontFamily ?? "sans");
-    const size = document.createElement("input"); size.type = "number"; size.min = "10"; size.max = "180"; size.step = "1"; size.value = String(Math.round(existing?.fontSize ?? (initialStyle === "heading-1" ? 48 : initialStyle === "heading-2" ? 38 : 20))); size.setAttribute("aria-label", "Schriftgröße");
+    const style = select("Text style", [["body", "Text"], ["heading-1", "Title"], ["heading-2", "Heading"], ["heading-3", "Subheading"], ["bullet", "Bullets"], ["numbered", "Numbered"], ["check", "Checklist"], ["quote", "Quote"], ["code", "Code"], ["math", "Math"]], existing?.blockStyle ?? initialStyle ?? "body");
+    const family = select("Font", [["sans", "Sans"], ["serif", "Serif"], ["mono", "Mono"], ["handwriting", "Handwriting"]], existing?.fontFamily ?? "sans");
+    const size = document.createElement("input"); size.type = "number"; size.min = "10"; size.max = "180"; size.step = "1"; size.value = String(Math.round(existing?.fontSize ?? (initialStyle === "heading-1" ? 48 : initialStyle === "heading-2" ? 38 : 20))); size.setAttribute("aria-label", "Font size");
     const formatButton = (label: string, text: string, pressed: boolean): HTMLButtonElement => { const button = document.createElement("button"); button.type = "button"; button.setAttribute("aria-label", label); button.setAttribute("aria-pressed", String(pressed)); button.textContent = text; return button; };
-    const bold = formatButton("Fett", "B", (existing?.fontWeight ?? 400) >= 600); const italic = formatButton("Kursiv", "I", existing?.fontStyle === "italic"); const underline = formatButton("Unterstrichen", "U", existing?.textDecoration === "underline"); underline.classList.add("is-underline");
-    const alignLeft = formatButton("Linksbündig", "≡", (existing?.textAlign ?? "left") === "left"); const alignCenter = formatButton("Zentriert", "≡", existing?.textAlign === "center"); const alignRight = formatButton("Rechtsbündig", "≡", existing?.textAlign === "right"); alignLeft.classList.add("align-left"); alignCenter.classList.add("align-center"); alignRight.classList.add("align-right");
+    const bold = formatButton("Bold", "B", (existing?.fontWeight ?? 400) >= 600); const italic = formatButton("Italic", "I", existing?.fontStyle === "italic"); const underline = formatButton("Underline", "U", existing?.textDecoration === "underline"); underline.classList.add("is-underline");
+    const alignLeft = formatButton("Align left", "≡", (existing?.textAlign ?? "left") === "left"); const alignCenter = formatButton("Align center", "≡", existing?.textAlign === "center"); const alignRight = formatButton("Align right", "≡", existing?.textAlign === "right"); alignLeft.classList.add("align-left"); alignCenter.classList.add("align-center"); alignRight.classList.add("align-right");
     const color = document.createElement("input"); color.type = "color"; color.value = existing?.color ?? this.penColor; color.setAttribute("aria-label", "Textfarbe");
-    const done = document.createElement("button"); done.type = "button"; done.className = "text-done"; done.textContent = "Fertig";
-    const input = document.createElement("textarea"); input.setAttribute("aria-label", "Text auf dem Whiteboard"); input.rows = 3; input.spellcheck = true;
+    const done = document.createElement("button"); done.type = "button"; done.className = "text-done"; done.textContent = "Done";
+    const input = document.createElement("textarea"); input.setAttribute("aria-label", "Text on whiteboard"); input.rows = 3; input.spellcheck = true;
     const group = (...children: HTMLElement[]): HTMLSpanElement => { const element = document.createElement("span"); element.className = "text-control-group"; element.append(...children); return element; };
     controls.append(group(style, family, size), group(bold, italic, underline), group(alignLeft, alignCenter, alignRight), group(color), done); controls.hidden = !existing && !sticky; shell.append(controls, input);
     let alignment: "left" | "center" | "right" = existing?.textAlign ?? "left";
@@ -355,10 +355,10 @@ export class WhiteboardApp {
   }
 
   private bindCollaboration(): void {
-    byId<HTMLButtonElement>("accept").innerHTML = `${icon("check")}<span>Annehmen</span>`; byId<HTMLButtonElement>("undo-agent").innerHTML = `${icon("close")}<span>Ablehnen</span>`;
+    byId<HTMLButtonElement>("accept").innerHTML = `${icon("check")}<span>Accept</span>`; byId<HTMLButtonElement>("undo-agent").innerHTML = `${icon("close")}<span>Reject</span>`;
     byId<HTMLButtonElement>("submit-turn").addEventListener("click", () => this.submitHumanTurn());
-    byId<HTMLButtonElement>("accept").addEventListener("click", () => { this.store.acceptAgentContribution(); this.renderer.activeAgentIds.clear(); this.renderer.instructionInk = []; this.renderer.agentMarkers = []; this.promptInput.value = ""; this.agentMarkerTip.hidden = true; this.updateContextPrompt(); this.renderer.request(); this.setStatus("Agentenvorschlag übernommen", 1800); });
-    byId<HTMLButtonElement>("undo-agent").addEventListener("click", () => { if (this.store.undoAgentContribution()) { this.renderer.activeAgentIds.clear(); this.renderer.instructionInk = []; this.renderer.agentMarkers = []; this.agentMarkerTip.hidden = true; this.updateContextPrompt(); this.renderer.request(); this.setStatus("Agentenvorschlag abgelehnt", 1800); } });
+    byId<HTMLButtonElement>("accept").addEventListener("click", () => { this.store.acceptAgentContribution(); this.renderer.activeAgentIds.clear(); this.renderer.instructionInk = []; this.renderer.agentMarkers = []; this.promptInput.value = ""; this.agentMarkerTip.hidden = true; this.updateContextPrompt(); this.renderer.request(); this.setStatus("Agent proposal accepted", 1800); });
+    byId<HTMLButtonElement>("undo-agent").addEventListener("click", () => { if (this.store.undoAgentContribution()) { this.renderer.activeAgentIds.clear(); this.renderer.instructionInk = []; this.renderer.agentMarkers = []; this.agentMarkerTip.hidden = true; this.updateContextPrompt(); this.renderer.request(); this.setStatus("Agent proposal rejected", 1800); } });
   }
 
   private bindSettings(): void {
@@ -366,7 +366,7 @@ export class WhiteboardApp {
     for (const [id, key] of pairs) { const input = byId<HTMLInputElement>(id); input.checked = this.store.document.settings[key]; input.addEventListener("change", () => { this.store.document.settings[key] = input.checked; if (key === "englishHandwritingAssist" && !input.checked) { window.clearTimeout(this.handwritingTimer); this.store.document.elements.forEach((element) => { if (element.type === "stroke") delete element.recognitionText; }); } this.store.changed(); }); }
     const native = byId<HTMLInputElement>("color-native"); const hex = byId<HTMLInputElement>("color-hex"); const opacity = byId<HTMLInputElement>("color-opacity"); const apply = (value: string) => { if (!/^#[0-9a-f]{6}$/i.test(value)) return; this.penColor = value.toLowerCase(); native.value = this.penColor; hex.value = this.penColor; document.querySelectorAll("[data-color]").forEach((item) => item.classList.remove("is-active")); if (this.renderer.selectionIds.size && !this.store.hasAgentContribution()) { this.store.checkpoint(); this.store.applyOperation({ type: "update_style", ids: [...this.renderer.selectionIds], color: this.penColor, opacity: this.opacity }, "human"); this.store.changed(); } };
     native.addEventListener("input", () => apply(native.value)); hex.addEventListener("change", () => apply(hex.value)); opacity.addEventListener("input", () => { this.opacity = Number(opacity.value) / 100; });
-    byId<HTMLElement>("handwriting-support").textContent = this.handwriting.supported() ? "Lokale englische Erkennung des Betriebssystems verfügbar; sichtbare Tinte bleibt unverändert." : "Keine lokale OS-Erkennung verfügbar; nur sanfte geometrische Glättung wird verwendet.";
+    byId<HTMLElement>("handwriting-support").textContent = this.handwriting.supported() ? "Local English recognition is available; visible ink remains unchanged." : "No local OS recognition available; only gentle geometric smoothing is used.";
   }
 
   private bindFiles(): void {
@@ -375,8 +375,8 @@ export class WhiteboardApp {
         const element: ImageElement = { type: "image", id: uuid("image"), x: centre.x - image.naturalWidth * scale / 2, y: centre.y - image.naturalHeight * scale / 2, width: image.naturalWidth * scale, height: image.naturalHeight * scale, dataUrl, mimeType: file.type === "image/png" ? "image/png" : "image/jpeg", sourceName: file.name, parentId: this.parentArtboardAt(centre)?.id };
         this.store.checkpoint(); this.store.document.elements.push(element); this.store.changed(); }; image.src = dataUrl; }; reader.readAsDataURL(file);
     });
-    document.querySelectorAll<HTMLButtonElement>("[data-export]").forEach((button) => button.addEventListener("click", () => { const format = button.dataset.export as "png" | "svg" | "pdf" | "json"; void downloadExport(format, this.store.document, [...this.renderer.selectionIds]).then(() => { this.togglePopover("export-popover"); this.setStatus(`${format.toUpperCase()} exportiert`, 1800); }).catch(() => this.setStatus("Export fehlgeschlagen", 2200)); }));
-    const importInput = byId<HTMLInputElement>("import-json"); importInput.addEventListener("change", () => { const file = importInput.files?.[0]; importInput.value = ""; if (!file) return; void file.text().then((text) => { const parsed = migrateBoard(JSON.parse(text) as unknown); if (!parsed) throw new Error("Ungültiges Whiteboard"); this.store.checkpoint(); this.store.replace(parsed); this.renderer.fitAll(); }).catch(() => this.setStatus("Datei konnte nicht geöffnet werden", 2200)); });
+    document.querySelectorAll<HTMLButtonElement>("[data-export]").forEach((button) => button.addEventListener("click", () => { const format = button.dataset.export as "png" | "svg" | "pdf" | "json"; void downloadExport(format, this.store.document, [...this.renderer.selectionIds]).then(() => { this.togglePopover("export-popover"); this.setStatus(`${format.toUpperCase()} exported`, 1800); }).catch(() => this.setStatus("Export failed", 2200)); }));
+    const importInput = byId<HTMLInputElement>("import-json"); importInput.addEventListener("change", () => { const file = importInput.files?.[0]; importInput.value = ""; if (!file) return; void file.text().then((text) => { const parsed = migrateBoard(JSON.parse(text) as unknown); if (!parsed) throw new Error("Invalid whiteboard"); this.store.checkpoint(); this.store.replace(parsed); this.renderer.fitAll(); }).catch(() => this.setStatus("Could not open file", 2200)); });
   }
 
   private inspect(scope: "all" | "priority" | "selection"): Record<string, unknown> {
@@ -392,7 +392,7 @@ export class WhiteboardApp {
     if (baseRevision !== undefined && baseRevision !== this.store.document.revision) return { ok: false, error: "stale_revision", currentRevision: this.store.document.revision, instruction: "Inspect the whiteboard again before editing." };
     const createsElement = new Set(["create_text", "create_note", "create_table", "create_frame", "create_highlight", "create_shape", "create_arrow", "create_stroke", "create_polygon", "create_icon", "connect"]); const explicitIds = operations.filter((operation) => createsElement.has(operation.type) && "id" in operation && typeof operation.id === "string").map((operation) => (operation as { id: string }).id); const existing = new Set(this.store.document.elements.map((element) => element.id));
     if (new Set(explicitIds).size !== explicitIds.length || explicitIds.some((id) => existing.has(id))) return { ok: false, error: "id_conflict", instruction: "Use unique IDs that are not already present on the board; inspect again if needed." };
-    this.store.beginAgentContribution(); this.updateUi(); this.setStatus("Agent arbeitet auf dem Canvas …"); const created: string[] = [];
+    this.store.beginAgentContribution(); this.updateUi(); this.setStatus("Agent is working on the canvas …"); const created: string[] = [];
     for (const operation of operations.slice(0, maxOperations)) { const targetIds = this.store.expandGroupIds(operationTargetIds(operation)); const ids = this.store.applyOperation(operation, "agent"); created.push(...ids); if (operation.type !== "create_agent_marker") { this.renderer.activeAgentIds = new Set([...this.renderer.activeAgentIds, ...ids, ...targetIds]); if (this.store.document.turn) this.store.document.turn.pendingChangeIds = [...new Set([...this.store.document.turn.pendingChangeIds, ...ids, ...targetIds])]; } this.renderer.agentMarkers = structuredClone(this.store.document.turn?.agentMarkers ?? []); this.store.changed(); await new Promise((resolve) => setTimeout(resolve, delay)); }
     const present = new Set(this.store.document.elements.map((element) => element.id));
     return { ok: true, revision: this.store.document.revision, createdIds: created.filter((id) => present.has(id)), message: "Changes are visible and editable. Call complete_whiteboard_contribution with the same lease." };
@@ -424,8 +424,8 @@ export class WhiteboardApp {
   }
 
   private submitHumanTurn(): void {
-    if (this.store.hasAgentContribution() || this.store.document.turn?.status === "review") { this.setStatus("Vorschlag zuerst annehmen oder ablehnen", 2200); return; }
-    if (this.store.document.turn && ["queued", "claimed", "planning", "working"].includes(this.store.document.turn.status)) { this.setStatus(this.store.document.turn.status === "queued" ? "Die Notiz wartet bereits auf den Agenten" : "Der Agent bearbeitet noch den aktuellen Turn", 2200); return; }
+    if (this.store.hasAgentContribution() || this.store.document.turn?.status === "review") { this.setStatus("Accept or reject the proposal first", 2200); return; }
+    if (this.store.document.turn && ["queued", "claimed", "planning", "working"].includes(this.store.document.turn.status)) { this.setStatus(this.store.document.turn.status === "queued" ? "The note is already queued for the agent" : "The agent is still working on this turn", 2200); return; }
     const promptText = this.promptInput.value.trim().slice(0, 4000);
     const ink = structuredClone(this.renderer.instructionInk); const selectionIds = [...this.renderer.selectionIds]; const priorityRegions: PriorityRegion[] = [];
     const inkPoints = ink.flat(); if (inkPoints.length) priorityRegions.push({ source: "ai-pen", bounds: this.boundsForPoints(inkPoints), elementIds: [], priority: 100 });
@@ -435,7 +435,7 @@ export class WhiteboardApp {
     const changedElementIds = [...this.recentHumanEditIds].filter((id) => this.store.document.elements.some((element) => element.id === id)); const changedBounds = boardBounds(this.store.document.elements.filter((element) => changedElementIds.includes(element.id))); if (changedBounds) priorityRegions.push({ source: "recent-edit", bounds: changedBounds, elementIds: changedElementIds, priority: 40 });
     this.store.checkpoint(); const turn: CollaborationTurn = { id: uuid("turn"), status: "queued", submittedRevision: this.store.document.revision, createdAt: new Date().toISOString(), promptText, selectionIds, instructionInk: ink, agentMarkers: [], priorityRegions: priorityRegions.sort((a, b) => b.priority - a.priority), changedElementIds, pendingChangeIds: [] }; this.store.document.turn = turn; attached.forEach((element) => { element.agentAttached = false; }); this.store.changed(); this.recentHumanEditIds.clear();
     const waiting = this.turnWaiters.splice(0); if (waiting.length) { const claimed = this.claimTurn(turn); waiting.forEach((resolve) => resolve(claimed)); }
-    this.setStatus(promptText && ink.length ? "Prompt und blaue Anweisung übergeben" : promptText ? "Textanweisung übergeben" : ink.length ? "Blaue Anweisung und Notiz übergeben" : "Notiz an den Agenten übergeben", 2400); this.updateUi();
+    this.setStatus(promptText && ink.length ? "Prompt and blue instruction sent" : promptText ? "Text instruction sent" : ink.length ? "Blue instruction and note sent" : "Note sent to agent", 2400); this.updateUi();
   }
 
   private boundsForPoints(points: InkPoint[]): PriorityRegion["bounds"] { return { minX: Math.min(...points.map((point) => point.x)), minY: Math.min(...points.map((point) => point.y)), maxX: Math.max(...points.map((point) => point.x)), maxY: Math.max(...points.map((point) => point.y)) }; }
@@ -457,7 +457,7 @@ export class WhiteboardApp {
     if (role === "button") operations.push({ type: "create_shape", id: `${prefix}-shape`, kind: "rectangle", x: centre.x - 90, y: centre.y - 26, width: 180, height: 52, color: "#080808", strokeWidth: 2, fillColor: "#080808", fillOpacity: 1, radius: 18, semanticRole: "button", parentId }, { type: "create_text", id: `${prefix}-label`, x: centre.x - 68, y: centre.y - 11, width: 136, text: "Button", fontSize: 18, color: "#ffffff", fontWeight: 600, textAlign: "center", semanticRole: "button-label", parentId }, { type: "group", groupId: prefix, ids: [`${prefix}-shape`, `${prefix}-label`] });
     else if (role === "input") operations.push({ type: "create_shape", id: `${prefix}-shape`, kind: "rectangle", x: centre.x - 140, y: centre.y - 28, width: 280, height: 56, color: "#808080", strokeWidth: 1.5, fillColor: "#ffffff", fillOpacity: 1, radius: 14, semanticRole: "input", parentId }, { type: "create_text", id: `${prefix}-label`, x: centre.x - 120, y: centre.y - 10, width: 240, text: "Beschriftetes Textfeld", fontSize: 17, color: "#404040", semanticRole: "input-label", parentId }, { type: "group", groupId: prefix, ids: [`${prefix}-shape`, `${prefix}-label`] });
     else if (role === "switch") operations.push({ type: "create_shape", id: `${prefix}-track`, kind: "rectangle", x: centre.x - 28, y: centre.y - 16, width: 56, height: 32, color: "#080808", strokeWidth: 1.5, fillColor: "#080808", fillOpacity: 1, radius: 16, semanticRole: "switch", parentId }, { type: "create_shape", id: `${prefix}-knob`, kind: "ellipse", x: centre.x + 1, y: centre.y - 12, width: 24, height: 24, color: "#ffffff", strokeWidth: 1, fillColor: "#ffffff", fillOpacity: 1, semanticRole: "switch-knob", parentId }, { type: "group", groupId: prefix, ids: [`${prefix}-track`, `${prefix}-knob`] });
-    else if (role === "tabs") operations.push({ type: "create_shape", id: `${prefix}-shape`, kind: "rectangle", x: centre.x - 160, y: centre.y - 25, width: 320, height: 50, color: "#c0c0c0", strokeWidth: 1, fillColor: "#f3f3f3", fillOpacity: 1, radius: 15, semanticRole: "tabs", parentId }, { type: "create_text", id: `${prefix}-label`, x: centre.x - 142, y: centre.y - 10, width: 284, text: "Übersicht     Details     Verlauf", fontSize: 16, color: "#080808", fontWeight: 500, textAlign: "center", semanticRole: "tab-labels", parentId }, { type: "group", groupId: prefix, ids: [`${prefix}-shape`, `${prefix}-label`] });
+    else if (role === "tabs") operations.push({ type: "create_shape", id: `${prefix}-shape`, kind: "rectangle", x: centre.x - 160, y: centre.y - 25, width: 320, height: 50, color: "#c0c0c0", strokeWidth: 1, fillColor: "#f3f3f3", fillOpacity: 1, radius: 15, semanticRole: "tabs", parentId }, { type: "create_text", id: `${prefix}-label`, x: centre.x - 142, y: centre.y - 10, width: 284, text: "Overview     Details     History", fontSize: 16, color: "#080808", fontWeight: 500, textAlign: "center", semanticRole: "tab-labels", parentId }, { type: "group", groupId: prefix, ids: [`${prefix}-shape`, `${prefix}-label`] });
     else operations.push({ type: "create_shape", id: `${prefix}-shape`, kind: "rectangle", x: centre.x - 170, y: centre.y - 110, width: 340, height: 220, color: "#c0c0c0", strokeWidth: 1.5, fillColor: "#ffffff", fillOpacity: 1, radius: 24, semanticRole: "card", parentId }, { type: "create_text", id: `${prefix}-title`, x: centre.x - 142, y: centre.y - 78, width: 284, text: "Card title", fontSize: 25, color: "#080808", fontWeight: 700, semanticRole: "card-title", parentId }, { type: "create_text", id: `${prefix}-body`, x: centre.x - 142, y: centre.y - 28, width: 284, text: "Inhalt und kurze Beschreibung", fontSize: 18, color: "#404040", semanticRole: "card-body", parentId }, { type: "group", groupId: prefix, ids: [`${prefix}-shape`, `${prefix}-title`, `${prefix}-body`] });
     this.store.checkpoint(); const created = operations.flatMap((operation) => this.store.applyOperation(operation, "human")); this.renderer.selectionIds = new Set(created); created.forEach((id) => this.recentHumanEditIds.add(id)); this.store.changed(); this.togglePopover("content-popover");
   }
@@ -476,30 +476,30 @@ export class WhiteboardApp {
   }
 
   private refreshExplanationControls(): void {
-    const sequence = this.activeExplanation?.sequence ?? this.store.document.explanationSequences[0]; this.explanationControls.hidden = !sequence; if (!sequence) return; const label = this.activeExplanation ? `${this.activeExplanation.index + 1}/${sequence.steps.length} · ${sequence.steps[this.activeExplanation.index].title}` : `${sequence.title} · Übersicht`; byId<HTMLElement>("explanation-title").textContent = label;
+    const sequence = this.activeExplanation?.sequence ?? this.store.document.explanationSequences[0]; this.explanationControls.hidden = !sequence; if (!sequence) return; const label = this.activeExplanation ? `${this.activeExplanation.index + 1}/${sequence.steps.length} · ${sequence.steps[this.activeExplanation.index].title}` : `${sequence.title} · Overview`; byId<HTMLElement>("explanation-title").textContent = label;
   }
 
-  private clearBoard(): void { if (this.store.document.elements.length === 0 || !window.confirm("Gesamtes Whiteboard leeren?")) return; this.renderer.selectionIds.clear(); this.store.clear(); }
+  private clearBoard(): void { if (this.store.document.elements.length === 0 || !window.confirm("Clear the entire whiteboard?")) return; this.renderer.selectionIds.clear(); this.store.clear(); }
   private selectedElements(): PageElement[] { return this.store.document.elements.filter((element) => this.renderer.selectionIds.has(element.id)); }
   private duplicateSelection(): void {
-    if (this.store.hasAgentContribution()) { this.setStatus("Vorschlag zuerst annehmen oder ablehnen", 1800); return; }
+    if (this.store.hasAgentContribution()) { this.setStatus("Accept or reject the proposal first", 1800); return; }
     const selected = this.selectedElements(); if (!selected.length) return; this.store.checkpoint(); const created = this.store.applyOperation({ type: "duplicate", ids: selected.map((element) => element.id), dx: 24, dy: 24 }, "human");
     this.renderer.selectionIds = new Set(created); this.store.changed();
   }
-  private reorderSelection(direction: "front" | "back"): void { if (this.store.hasAgentContribution()) { this.setStatus("Vorschlag zuerst annehmen oder ablehnen", 1800); return; } const ids = [...this.renderer.selectionIds]; if (!ids.length) return; this.store.checkpoint(); this.store.applyOperation({ type: "reorder", ids, direction }, "human"); this.store.changed(); }
+  private reorderSelection(direction: "front" | "back"): void { if (this.store.hasAgentContribution()) { this.setStatus("Accept or reject the proposal first", 1800); return; } const ids = [...this.renderer.selectionIds]; if (!ids.length) return; this.store.checkpoint(); this.store.applyOperation({ type: "reorder", ids, direction }, "human"); this.store.changed(); }
   private resizeSelectedText(delta: number): void {
-    if (this.store.hasAgentContribution()) { this.setStatus("Vorschlag zuerst annehmen oder ablehnen", 1800); return; }
+    if (this.store.hasAgentContribution()) { this.setStatus("Accept or reject the proposal first", 1800); return; }
     const texts = this.selectedElements().filter((element): element is Extract<PageElement, { type: "text" }> => element.type === "text"); if (!texts.length) return; this.store.checkpoint();
     for (const text of texts) { text.fontSize = Math.max(10, Math.min(180, text.fontSize + delta)); text.height = estimateTextHeight(text.text, text.width, text.fontSize); } this.store.changed();
   }
   private deleteSelection(): void {
-    if (this.store.hasAgentContribution()) { this.setStatus("Vorschlag zuerst annehmen oder ablehnen", 1800); return; }
+    if (this.store.hasAgentContribution()) { this.setStatus("Accept or reject the proposal first", 1800); return; }
     const ids = [...this.renderer.selectionIds]; if (!ids.length) return; this.store.checkpoint(); this.store.applyOperation({ type: "delete", ids }, "human"); this.renderer.selectionIds.clear(); this.store.changed();
   }
   private toggleAgentAttachment(): void {
-    if (this.store.hasAgentContribution()) { this.setStatus("Vorschlag zuerst annehmen oder ablehnen", 1800); return; }
+    if (this.store.hasAgentContribution()) { this.setStatus("Accept or reject the proposal first", 1800); return; }
     const ids = this.store.expandGroupIds([...this.renderer.selectionIds]); const elements = this.store.document.elements.filter((element) => ids.includes(element.id)); if (!elements.some((element) => element.semanticRole === "note" || element.semanticRole === "note-body")) return;
-    const attached = elements.some((element) => element.agentAttached); this.store.checkpoint(); elements.forEach((element) => { element.agentAttached = !attached; }); this.store.changed(); this.setStatus(attached ? "Notizzettel nicht mehr vorgemerkt" : "Notizzettel wird beim nächsten Submit angehängt", 2200);
+    const attached = elements.some((element) => element.agentAttached); this.store.checkpoint(); elements.forEach((element) => { element.agentAttached = !attached; }); this.store.changed(); this.setStatus(attached ? "Note detached" : "Note will be attached on next submit", 2200);
   }
   private setStatus(text: string, duration = 0): void { this.status.textContent = text; if (duration) setTimeout(() => { if (this.status.textContent === text) this.status.textContent = ""; }, duration); }
   private updateUi(): void { this.review.hidden = !this.store.hasAgentContribution(); this.renderer.agentMarkers = structuredClone(this.store.document.turn?.agentMarkers ?? []); if (this.store.hasAgentContribution()) this.renderer.activeAgentIds = new Set(this.store.document.turn?.pendingChangeIds ?? []); byId<HTMLSpanElement>("revision").textContent = `r${this.store.document.revision}`; const submit = byId<HTMLButtonElement>("submit-turn"); const busy = Boolean(this.store.document.turn && ["queued", "claimed", "planning", "working", "review"].includes(this.store.document.turn.status)); submit.classList.toggle("is-waiting", busy && this.store.document.turn?.status !== "review"); submit.disabled = busy; this.refreshExplanationControls(); this.updateZoom(); this.updateContextPrompt(); }
@@ -507,9 +507,9 @@ export class WhiteboardApp {
   private updateContextPrompt(): void {
     const tools = byId<HTMLElement>("selection-tools"); const bounds = this.renderer.selectionBounds(); tools.hidden = !bounds;
     const selected = this.selectedElements(); const count = this.store.selectionUnitCount([...this.renderer.selectionIds]); const ink = this.renderer.instructionInk.length; const prompt = this.promptInput.value.trim().length > 0;
-    const typeNames: Record<PageElement["type"], string> = { stroke: "Tinte", text: "Text", highlight: "Marker", shape: "Form", image: "Bild" }; const selectedKinds = [...new Set(selected.map((element) => element.name ?? (element.artboard ? "Artboard" : typeNames[element.type])))].slice(0, 2);
+    const typeNames: Record<PageElement["type"], string> = { stroke: "Ink", text: "Text", highlight: "Marker", shape: "Shape", image: "Image" }; const selectedKinds = [...new Set(selected.map((element) => element.name ?? (element.artboard ? "Artboard" : typeNames[element.type])))].slice(0, 2);
     const attachedIds = this.store.document.elements.filter((element) => element.agentAttached).map((element) => element.id); const attachedCount = this.store.selectionUnitCount(attachedIds); const scopes: string[] = [];
-    if (count) scopes.push(`${count} ausgewählt${selectedKinds.length ? ` · ${selectedKinds.join(", ")}` : ""}`); if (ink) scopes.push(ink === 1 ? "AI Pen" : `${ink}× AI Pen`); if (attachedCount) scopes.push(`${attachedCount} angehängt`); if (prompt) scopes.push("Textprompt"); if (!scopes.length) scopes.push("Gesamte Notiz");
+    if (count) scopes.push(`${count} selected${selectedKinds.length ? ` · ${selectedKinds.join(", ")}` : ""}`); if (ink) scopes.push(ink === 1 ? "AI Pen" : `${ink}× AI Pen`); if (attachedCount) scopes.push(`${attachedCount} attached`); if (prompt) scopes.push("Text prompt"); if (!scopes.length) scopes.push("Entire canvas");
     const scope = byId<HTMLElement>("request-scope"); scope.replaceChildren(...scopes.map((label) => { const chip = document.createElement("span"); chip.textContent = label; chip.title = label; return chip; }));
     this.promptDock.classList.toggle("has-prompt", prompt); this.promptInput.style.height = "40px"; const promptHeight = Math.min(112, Math.max(40, this.promptInput.scrollHeight)); this.promptInput.style.height = `${promptHeight}px`; document.documentElement.style.setProperty("--prompt-dock-height", `${this.promptDock.offsetHeight}px`);
     if (!bounds) return;
