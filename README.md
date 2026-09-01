@@ -17,7 +17,7 @@ This project turns the existing Smooth Handwriting vector canvas into a standalo
 - Smart labelled connectors that stay attached to object edges when either endpoint moves or resizes
 - Grouping, alignment and equal-gap distribution for agent-created or human-created layouts
 - Undo, redo, local browser persistence, JSON import and PNG/SVG/multi-page PDF/JSON export
-- One arrow submit bound to AI ink, lasso selection, recent highlights and recent edits—no embedded chat bar
+- Bottom prompt dock with one arrow submit, auto-growing user text and visible context chips for AI ink, selection, attachments and the whole canvas—no embedded chat bar
 - Blue glowing AI Pen: draw spatial instructions for the agent without adding permanent canvas ink
 - Alternating Human ↔ Agent turns with a wait tool, lease token and stale-revision protection
 - Separate red glowing agent markers with a hover explanation until the contribution is accepted or undone

@@ -55,6 +55,7 @@ export class WhiteboardApp {
   private readonly agentMarkerTip = byId<HTMLDivElement>("agent-marker-tip");
   private readonly imageInput = byId<HTMLInputElement>("image-input");
   private readonly promptInput = byId<HTMLTextAreaElement>("instruction-prompt");
+  private readonly promptDock = byId<HTMLElement>("prompt-dock");
   private readonly explanationControls = byId<HTMLElement>("explanation-controls");
   private activeExplanation: { sequence: ExplanationSequence; index: number } | null = null;
   private readonly abort = new AbortController();
@@ -505,11 +506,16 @@ export class WhiteboardApp {
   private updateZoom(): void { byId<HTMLSpanElement>("zoom").textContent = `${Math.round(this.renderer.camera.zoom * 100)}%`; }
   private updateContextPrompt(): void {
     const tools = byId<HTMLElement>("selection-tools"); const bounds = this.renderer.selectionBounds(); tools.hidden = !bounds;
-    const count = this.store.selectionUnitCount([...this.renderer.selectionIds]); const ink = this.renderer.instructionInk.length; const prompt = this.promptInput.value.trim().length > 0; byId<HTMLElement>("request-scope").textContent = prompt && ink ? "Prompt + AI Pen" : ink && count ? `AI-Pen + ${count} Auswahl` : prompt && count ? `Prompt + ${count} Auswahl` : prompt ? "Textanweisung" : ink ? "AI-Pen-Anweisung" : count ? `${count} Auswahl` : "Gesamte Notiz";
+    const selected = this.selectedElements(); const count = this.store.selectionUnitCount([...this.renderer.selectionIds]); const ink = this.renderer.instructionInk.length; const prompt = this.promptInput.value.trim().length > 0;
+    const typeNames: Record<PageElement["type"], string> = { stroke: "Tinte", text: "Text", highlight: "Marker", shape: "Form", image: "Bild" }; const selectedKinds = [...new Set(selected.map((element) => element.name ?? (element.artboard ? "Artboard" : typeNames[element.type])))].slice(0, 2);
+    const attachedIds = this.store.document.elements.filter((element) => element.agentAttached).map((element) => element.id); const attachedCount = this.store.selectionUnitCount(attachedIds); const scopes: string[] = [];
+    if (count) scopes.push(`${count} ausgewählt${selectedKinds.length ? ` · ${selectedKinds.join(", ")}` : ""}`); if (ink) scopes.push(ink === 1 ? "AI Pen" : `${ink}× AI Pen`); if (attachedCount) scopes.push(`${attachedCount} angehängt`); if (prompt) scopes.push("Textprompt"); if (!scopes.length) scopes.push("Gesamte Notiz");
+    const scope = byId<HTMLElement>("request-scope"); scope.replaceChildren(...scopes.map((label) => { const chip = document.createElement("span"); chip.textContent = label; chip.title = label; return chip; }));
+    this.promptDock.classList.toggle("has-prompt", prompt); this.promptInput.style.height = "40px"; const promptHeight = Math.min(112, Math.max(40, this.promptInput.scrollHeight)); this.promptInput.style.height = `${promptHeight}px`; document.documentElement.style.setProperty("--prompt-dock-height", `${this.promptDock.offsetHeight}px`);
     if (!bounds) return;
     const top = this.renderer.screen({ x: (bounds.minX + bounds.maxX) / 2, y: bounds.minY });
     tools.style.left = `${Math.max(170, Math.min(window.innerWidth - 170, top.x))}px`; tools.style.top = `${Math.max(72, top.y - 54)}px`;
-    const selected = this.selectedElements(); tools.classList.toggle("has-text", selected.some((element) => element.type === "text")); tools.classList.toggle("has-note", selected.some((element) => element.semanticRole === "note" || element.semanticRole === "note-body")); byId<HTMLButtonElement>("attach-agent").classList.toggle("is-active", selected.some((element) => element.agentAttached));
+    tools.classList.toggle("has-text", selected.some((element) => element.type === "text")); tools.classList.toggle("has-note", selected.some((element) => element.semanticRole === "note" || element.semanticRole === "note-body")); byId<HTMLButtonElement>("attach-agent").classList.toggle("is-active", selected.some((element) => element.agentAttached));
   }
 
   private updateAgentMarkerHover(event: PointerEvent): void {

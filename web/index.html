@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#ffffff">
   <meta name="description" content="Ein gemeinsames, unendliches Whiteboard für Mensch und Browser-Agent.">
   <title>Shared Whiteboard</title>
-  <link rel="stylesheet" href="./app.css?v=0.15.0">
+  <link rel="stylesheet" href="./app.css?v=0.15.1">
 </head>
 <body>
   <main class="workspace" aria-label="Gemeinsames unendliches Whiteboard">
@@ -27,8 +27,6 @@
       <div class="toolbar-divider secondary-divider"></div>
       <button type="button" id="undo" class="secondary-action" aria-label="Rückgängig" title="Rückgängig"></button>
       <button type="button" id="redo" class="secondary-action" aria-label="Wiederholen" title="Wiederholen"></button>
-      <label class="instruction-control"><span>Anweisung</span><textarea id="instruction-prompt" rows="1" maxlength="4000" aria-label="Anweisung an den Agenten"></textarea></label>
-      <button type="button" id="submit-turn" class="submit-arrow" aria-label="Notiz an Agent senden" title="An Agent senden · Strg+Enter"></button>
     </nav>
     <section id="shapes-popover" class="popover tool-popover" hidden aria-label="Formen">
       <button type="button" data-tool="rectangle" aria-label="Rechteck"></button>
@@ -72,12 +70,17 @@
       <span class="text-actions"><button type="button" id="edit-text" aria-label="Textfeld bearbeiten"></button><button type="button" id="text-smaller" aria-label="Text verkleinern"></button><button type="button" id="text-larger" aria-label="Text vergrößern"></button></span>
       <button type="button" id="attach-agent" class="attach-action" aria-label="Für Agent vormerken"></button><button type="button" id="delete-selection" aria-label="Auswahl löschen"></button>
     </section>
+    <section id="prompt-dock" class="prompt-dock" aria-label="Whiteboard an den Agenten übergeben">
+      <div class="agent-context"><span class="dock-label">Agent erhält</span><div id="request-scope" class="scope-chips"><span>Gesamte Notiz</span></div></div>
+      <label class="instruction-control"><textarea id="instruction-prompt" rows="1" maxlength="4000" aria-label="Anweisung an den Agenten"></textarea></label>
+      <button type="button" id="submit-turn" class="submit-arrow" aria-label="Notiz an Agent senden" title="An Agent senden · Strg+Enter"></button>
+    </section>
     <section id="review" class="review" aria-label="Agentenvorschlag prüfen" hidden><span>Vorschlag prüfen</span><button type="button" id="accept"></button><button type="button" id="undo-agent"></button></section>
     <section id="explanation-controls" class="explanation-controls" aria-label="Geführte Erklärung" hidden><button type="button" id="explanation-prev" aria-label="Vorheriger Schritt">‹</button><button type="button" id="explanation-overview">Übersicht</button><span id="explanation-title"></span><button type="button" id="explanation-next" aria-label="Nächster Schritt">›</button></section>
-    <div class="activity" role="status" aria-live="polite"><span id="status"></span><span id="request-scope">Gesamte Notiz</span></div>
+    <div class="activity" role="status" aria-live="polite"><span id="status"></span></div>
     <div id="agent-marker-tip" class="agent-marker-tip" role="tooltip" hidden><span></span>Agentenkommentar · temporär · nicht im Export</div>
     <input id="image-input" type="file" accept="image/png,image/jpeg" hidden>
   </main>
-  <script type="module" src="./app.js?v=0.15.0"></script>
+  <script type="module" src="./app.js?v=0.15.1"></script>
 </body>
 </html>
