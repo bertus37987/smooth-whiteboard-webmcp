@@ -12,7 +12,8 @@ This project turns the existing Smooth Handwriting vector canvas into a standalo
 - Low-latency freehand input using coalesced pointer events; no handwriting model runs while the pen is down
 - Pen-first tools for freehand ink, transient AI ink, smart marker, shapes, arrows, rich text, notes, tables, images, lasso and erasing
 - Selection, edge-aware multi-element lasso, moving, eight-handle group resizing, duplication, layer ordering and deletion
-- Custom resizable multi-line text boxes with headings, bullets, numbering, checklists, quotes, code and math styles
+- Plain resizable canvas text fields with headings, bullets, numbering, checklists, quotes, code and math styles; sticky notes remain a separate tool
+- Sticky notes can be marked with the paperclip action and become an explicit priority region in the next agent turn
 - Smart labelled connectors that stay attached to object edges when either endpoint moves or resizes
 - Grouping, alignment and equal-gap distribution for agent-created or human-created layouts
 - Undo, redo, local browser persistence and JSON import/export

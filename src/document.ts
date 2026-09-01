@@ -8,6 +8,8 @@ export interface ElementMeta {
   opacity?: number;
   semanticRole?: string;
   renderStyle?: "clean" | "sketch";
+  /** One-shot human context marker included in the next agent turn. */
+  agentAttached?: boolean;
 }
 
 export interface StrokeElement extends InkStroke, ElementMeta {

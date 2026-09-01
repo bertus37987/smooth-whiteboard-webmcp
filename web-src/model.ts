@@ -10,7 +10,7 @@ export interface WhiteboardSettings {
   englishHandwritingAssist: boolean;
 }
 export interface PriorityRegion {
-  source: "ai-pen" | "selection" | "highlight" | "recent-edit";
+  source: "ai-pen" | "attachment" | "selection" | "highlight" | "recent-edit";
   bounds: { minX: number; minY: number; maxX: number; maxY: number };
   elementIds: string[];
   priority: number;
@@ -198,7 +198,7 @@ export function estimateTextHeight(text: string, width: number, fontSize: number
 }
 
 export function elementSummary(element: PageElement): Record<string, unknown> {
-  const bounds = elementBounds(element); const base = { id: element.id, type: element.type, bounds, locked: element.locked ?? false, semanticRole: element.semanticRole ?? null, renderStyle: element.renderStyle ?? "clean", opacity: element.opacity ?? 1 };
+  const bounds = elementBounds(element); const base = { id: element.id, type: element.type, bounds, locked: element.locked ?? false, semanticRole: element.semanticRole ?? null, renderStyle: element.renderStyle ?? "clean", opacity: element.opacity ?? 1, agentAttached: element.agentAttached ?? false };
   if (element.type === "text") return { ...base, text: element.text, fontSize: element.fontSize, color: element.color, width: element.width, height: element.height, fontFamily: element.fontFamily ?? "sans", fontWeight: element.fontWeight ?? 400, fontStyle: element.fontStyle ?? "normal", textAlign: element.textAlign ?? "left", blockStyle: element.blockStyle ?? "body", highlightColor: element.highlightColor ?? null };
   if (element.type === "shape") return { ...base, kind: element.kind, points: element.points, color: element.color, strokeWidth: element.size, fillColor: element.fillColor, fillOpacity: element.fillOpacity ?? 0, radius: element.radius ?? 0, lineStyle: element.lineStyle ?? "solid", arrowHeads: element.startArrow ? (element.endArrow === false ? "start" : "both") : "end" };
   if (element.type === "highlight") return { ...base, x1: element.x1, x2: element.x2, y: element.y, size: element.size, color: element.color, opacity: element.opacity };

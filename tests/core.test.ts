@@ -115,6 +115,10 @@ assert.equal(styled?.type === "text" ? `${styled.fontFamily}/${styled.fontWeight
 assert.ok(styledHighlightIndex >= 0 && styledHighlightIndex < connectedStore.document.elements.findIndex((element) => element.id === "styled"), "agent text marking is a separate editable highlight layered behind the text");
 const noteIds = connectedStore.applyOperation({ type: "create_note", id: "study", x: 0, y: 260, text: "Key idea", blockStyle: "bullet", renderStyle: "sketch" }, "agent");
 assert.equal(noteIds.length, 2, "high-level notes compile to editable grouped elements");
+const noteCard = connectedStore.document.elements.find((element) => element.id === noteIds[0]); const noteBody = connectedStore.document.elements.find((element) => element.id === noteIds[1]);
+assert.equal(noteCard?.semanticRole, "note"); assert.equal(noteBody?.semanticRole, "note-body", "sticky notes remain distinct from plain canvas text fields");
+if (noteCard) noteCard.agentAttached = true;
+assert.equal(noteCard?.agentAttached, true, "a sticky note can be explicitly attached to the next agent turn");
 const tableIds = connectedStore.applyOperation({ type: "create_table", id: "facts", x: 0, y: 500, width: 360, height: 180, rows: 3, columns: 2, headers: ["Term", "Meaning"], cells: ["", "", "A", "B", "C", "D"] }, "agent");
 assert.ok(tableIds.length >= 8, "agent tables compile to ordinary cells and text");
 assert.equal(isCanvasOperation({ type: "set_locked", ids: noteIds, locked: true }), true);

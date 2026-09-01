@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#ffffff">
   <meta name="description" content="Ein gemeinsames, unendliches Whiteboard für Mensch und Browser-Agent.">
   <title>Shared Whiteboard</title>
-  <link rel="stylesheet" href="./app.css?v=0.12.0">
+  <link rel="stylesheet" href="./app.css?v=0.12.1">
 </head>
 <body>
   <main class="workspace" aria-label="Gemeinsames unendliches Whiteboard">
@@ -22,7 +22,7 @@
         <button type="button" data-tool="rectangle" aria-label="Rechteck" title="Rechteck · R"></button>
         <button type="button" data-tool="ellipse" aria-label="Ellipse" title="Ellipse · O"></button>
         <button type="button" data-tool="arrow" aria-label="Pfeil" title="Pfeil · A"></button>
-        <button type="button" data-tool="text" aria-label="Text" title="Text · T"></button>
+        <button type="button" data-tool="text" aria-label="Textfeld" title="Textfeld · T"></button>
         <button type="button" data-tool="sticky" aria-label="Notizzettel" title="Notizzettel · N"></button>
         <button type="button" data-tool="table" aria-label="Tabelle" title="Tabelle"></button>
         <button type="button" id="image-tool" data-tool="image" aria-label="Bild" title="Bild"></button>
@@ -75,9 +75,11 @@
       <button type="button" id="send-back" aria-label="In den Hintergrund" title="In den Hintergrund"></button>
       <button type="button" id="bring-front" aria-label="In den Vordergrund" title="In den Vordergrund"></button>
       <span class="text-actions">
+        <button type="button" id="edit-text" aria-label="Textfeld bearbeiten" title="Textfeld bearbeiten"></button>
         <button type="button" id="text-smaller" aria-label="Text verkleinern" title="Text verkleinern"></button>
         <button type="button" id="text-larger" aria-label="Text vergrößern" title="Text vergrößern"></button>
       </span>
+      <button type="button" id="attach-agent" class="attach-action" aria-label="Für Agent vormerken" title="Beim nächsten Submit an den Agenten anhängen"></button>
       <button type="button" id="delete-selection" aria-label="Auswahl löschen" title="Auswahl löschen"></button>
     </section>
     <section id="review" class="review" aria-label="Agentenbeitrag prüfen" hidden>
@@ -90,6 +92,6 @@
     <div id="agent-marker-tip" class="agent-marker-tip" role="tooltip" hidden><span></span>Agenten-Markierung · neuer Beitrag</div>
     <input id="image-input" type="file" accept="image/png,image/jpeg" hidden>
   </main>
-  <script type="module" src="./app.js?v=0.12.0"></script>
+  <script type="module" src="./app.js?v=0.12.1"></script>
 </body>
 </html>

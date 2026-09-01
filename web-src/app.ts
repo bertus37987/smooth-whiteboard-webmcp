@@ -15,7 +15,7 @@ const icons: Record<string, string> = {
   marker: '<path d="M4 17l9-12 6 5-9 11H5z"/><path d="M3 21h18"/>', text: '<path d="M5 6V4h14v2M12 4v16M8 20h8"/>', sticky: '<path d="M5 3h14v13l-5 5H5z"/><path d="M14 21v-5h5"/>', table: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 4v16M15 4v16"/>', image: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8" cy="9" r="1.5"/><path d="M4 17l5-5 4 4 2-2 5 4"/>', lasso: '<path d="M19 8c0-3-3-5-7-5S4 5 4 9s4 6 9 6c4 0 7-2 7-5M13 15c0 4-2 6-5 6-2 0-3-1-3-2s1-2 3-2c2 0 4 2 5 4"/>',
   eraser: '<path d="M7 19h12M4 14l8-9a2 2 0 013 0l4 4a2 2 0 010 3l-7 7H8l-4-3a2 2 0 010-2z"/>', undo: '<path d="M9 7l-5 5 5 5"/><path d="M5 12h8a6 6 0 016 6"/>', redo: '<path d="M15 7l5 5-5 5"/><path d="M19 12h-8a6 6 0 00-6 6"/>',
   fit: '<path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/>', trash: '<path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"/>', check: '<path d="M5 12l4 4 10-10"/>', close: '<path d="M6 6l12 12M18 6L6 18"/>',
-  send: '<path d="M3 12h12M11 7l5 5-5 5"/><path d="M19 7v10"/>', settings: '<path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/><circle cx="12" cy="12" r="3"/>', copy: '<rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V5a2 2 0 00-2-2H5a2 2 0 00-2 2v9a2 2 0 002 2h3"/>',
+  send: '<path d="M3 12h12M11 7l5 5-5 5"/><path d="M19 7v10"/>', settings: '<path d="M4 6h10M18 6h2M4 12h3M11 12h9M4 18h8M16 18h4"/><circle cx="16" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="14" cy="18" r="2"/>', attach: '<path d="M9 12.5l5.2-5.2a3 3 0 114.2 4.2l-7.1 7.1a5 5 0 11-7.1-7.1l7.1-7.1"/><path d="M8 15.5l7.1-7.1"/>', edit: '<path d="M4 20l4-1 11-11-3-3L5 16z"/><path d="M14 7l3 3"/>', copy: '<rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V5a2 2 0 00-2-2H5a2 2 0 00-2 2v9a2 2 0 002 2h3"/>',
   back: '<rect x="4" y="8" width="10" height="10" rx="1"/><path d="M10 8V4h10v10h-6"/>', front: '<rect x="10" y="4" width="10" height="10" rx="1"/><path d="M14 14v4H4V8h6"/>', minus: '<path d="M6 12h12"/>', plus: '<path d="M12 6v12M6 12h12"/>'
 };
 
@@ -99,12 +99,14 @@ export class WhiteboardApp {
   }
 
   private bindSelectionTools(): void {
-    for (const [id, name] of [["duplicate", "copy"], ["send-back", "back"], ["bring-front", "front"], ["text-smaller", "minus"], ["text-larger", "plus"], ["delete-selection", "trash"]] as const) byId<HTMLButtonElement>(id).innerHTML = icon(name);
+    for (const [id, name] of [["duplicate", "copy"], ["send-back", "back"], ["bring-front", "front"], ["edit-text", "edit"], ["text-smaller", "minus"], ["text-larger", "plus"], ["attach-agent", "attach"], ["delete-selection", "trash"]] as const) byId<HTMLButtonElement>(id).innerHTML = icon(name);
     byId<HTMLButtonElement>("duplicate").addEventListener("click", () => this.duplicateSelection());
     byId<HTMLButtonElement>("send-back").addEventListener("click", () => this.reorderSelection("back"));
     byId<HTMLButtonElement>("bring-front").addEventListener("click", () => this.reorderSelection("front"));
+    byId<HTMLButtonElement>("edit-text").addEventListener("click", () => { const text = this.selectedElements().find((element): element is Extract<PageElement, { type: "text" }> => element.type === "text"); if (text) this.beginText({ x: text.x, y: text.baseline - text.fontSize, pressure: .5 }, text); });
     byId<HTMLButtonElement>("text-smaller").addEventListener("click", () => this.resizeSelectedText(-2));
     byId<HTMLButtonElement>("text-larger").addEventListener("click", () => this.resizeSelectedText(2));
+    byId<HTMLButtonElement>("attach-agent").addEventListener("click", () => this.toggleAgentAttachment());
     byId<HTMLButtonElement>("delete-selection").addEventListener("click", () => this.deleteSelection());
   }
 
@@ -271,7 +273,7 @@ export class WhiteboardApp {
       const width = Math.max(80, editorRect.width / this.renderer.camera.zoom); const height = Math.max(40, editorRect.height / this.renderer.camera.zoom);
       if (existing) { const current = this.store.document.elements.find((element) => element.id === existing.id); if (current?.type === "text") { current.text = text; current.width = width; current.blockStyle = style.value as typeof current.blockStyle; current.height = Math.max(height - 41, estimateTextHeight(text, width, current.fontSize)); this.recentHumanEditIds.add(current.id); } }
       else if (sticky) { const ids = this.store.applyOperation({ type: "create_note", x: point.x, y: point.y, width, height: Math.max(100, height - 41), text, color: this.penColor, blockStyle: style.value as Extract<PageElement, { type: "text" }>["blockStyle"] }, "human"); ids.forEach((id) => this.recentHumanEditIds.add(id)); }
-      else { const fontSize = style.value === "heading-1" ? 48 : style.value === "heading-2" ? 38 : 30; const element = { type: "text", id: uuid("text"), x: point.x, baseline: point.y + fontSize, width, height: Math.max(height - 41, estimateTextHeight(text, width, fontSize)), fontSize, color: this.penColor, text, blockStyle: style.value as Extract<PageElement, { type: "text" }>["blockStyle"] } as const; this.store.document.elements.push(element); this.recentHumanEditIds.add(element.id); }
+      else { const fontSize = style.value === "heading-1" ? 48 : style.value === "heading-2" ? 38 : 30; const element = { type: "text", id: uuid("text"), x: point.x, baseline: point.y + fontSize, width, height: Math.max(height - 41, estimateTextHeight(text, width, fontSize)), fontSize, color: this.penColor, text, blockStyle: style.value as Extract<PageElement, { type: "text" }>["blockStyle"], semanticRole: "text-field" } as const; this.store.document.elements.push(element); this.recentHumanEditIds.add(element.id); }
       this.store.changed(); };
     shell.addEventListener("focusout", (event) => { if (!shell.contains(event.relatedTarget as Node | null)) commit(); }); input.addEventListener("keydown", (event) => { if (event.key === "Escape") { input.value = ""; commit(); } if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); event.stopPropagation(); commit(); this.submitHumanTurn(); } });
   }
@@ -361,10 +363,11 @@ export class WhiteboardApp {
     if (this.store.document.turn && ["queued", "claimed", "planning", "working"].includes(this.store.document.turn.status)) { this.setStatus(this.store.document.turn.status === "queued" ? "Die Notiz wartet bereits auf den Agenten" : "Der Agent bearbeitet noch den aktuellen Turn", 2200); return; }
     const ink = structuredClone(this.renderer.instructionInk); const selectionIds = [...this.renderer.selectionIds]; const priorityRegions: PriorityRegion[] = [];
     const inkPoints = ink.flat(); if (inkPoints.length) priorityRegions.push({ source: "ai-pen", bounds: this.boundsForPoints(inkPoints), elementIds: [], priority: 100 });
+    const attached = this.store.document.elements.filter((element) => element.agentAttached); const attachedIds = attached.map((element) => element.id); const attachedBounds = boardBounds(attached); if (attachedBounds) priorityRegions.push({ source: "attachment", bounds: attachedBounds, elementIds: attachedIds, priority: 90 });
     const selected = this.store.document.elements.filter((element) => selectionIds.includes(element.id)); const selectionBounds = boardBounds(selected); if (selectionBounds) priorityRegions.push({ source: "selection", bounds: selectionBounds, elementIds: selectionIds, priority: 80 });
     const highlights = this.store.document.elements.filter((element) => element.type === "highlight").slice(-8); for (const highlight of highlights) priorityRegions.push({ source: "highlight", bounds: boardBounds([highlight])!, elementIds: [highlight.id], priority: 60 });
     const changedElementIds = [...this.recentHumanEditIds].filter((id) => this.store.document.elements.some((element) => element.id === id)); const changedBounds = boardBounds(this.store.document.elements.filter((element) => changedElementIds.includes(element.id))); if (changedBounds) priorityRegions.push({ source: "recent-edit", bounds: changedBounds, elementIds: changedElementIds, priority: 40 });
-    this.store.checkpoint(); const turn: CollaborationTurn = { id: uuid("turn"), status: "queued", submittedRevision: this.store.document.revision, createdAt: new Date().toISOString(), selectionIds, instructionInk: ink, priorityRegions: priorityRegions.sort((a, b) => b.priority - a.priority), changedElementIds }; this.store.document.turn = turn; this.store.changed(); this.recentHumanEditIds.clear();
+    this.store.checkpoint(); const turn: CollaborationTurn = { id: uuid("turn"), status: "queued", submittedRevision: this.store.document.revision, createdAt: new Date().toISOString(), selectionIds, instructionInk: ink, priorityRegions: priorityRegions.sort((a, b) => b.priority - a.priority), changedElementIds }; this.store.document.turn = turn; attached.forEach((element) => { element.agentAttached = false; }); this.store.changed(); this.recentHumanEditIds.clear();
     const waiting = this.turnWaiters.splice(0); if (waiting.length) { const claimed = this.claimTurn(turn); waiting.forEach((resolve) => resolve(claimed)); }
     this.setStatus(ink.length ? "Blaue Anweisung und Notiz übergeben" : "Notiz an den Agenten übergeben", 2400); this.updateUi();
   }
@@ -397,6 +400,10 @@ export class WhiteboardApp {
   private deleteSelection(): void {
     const ids = [...this.renderer.selectionIds]; if (!ids.length) return; this.store.checkpoint(); this.store.applyOperation({ type: "delete", ids }, "human"); this.renderer.selectionIds.clear(); this.store.changed();
   }
+  private toggleAgentAttachment(): void {
+    const ids = this.store.expandGroupIds([...this.renderer.selectionIds]); const elements = this.store.document.elements.filter((element) => ids.includes(element.id)); if (!elements.some((element) => element.semanticRole === "note" || element.semanticRole === "note-body")) return;
+    const attached = elements.some((element) => element.agentAttached); this.store.checkpoint(); elements.forEach((element) => { element.agentAttached = !attached; }); this.store.changed(); this.setStatus(attached ? "Notizzettel nicht mehr vorgemerkt" : "Notizzettel wird beim nächsten Submit angehängt", 2200);
+  }
   private setStatus(text: string, duration = 0): void { this.status.textContent = text; if (duration) setTimeout(() => { if (this.status.textContent === text) this.status.textContent = ""; }, duration); }
   private updateUi(): void { this.review.hidden = !this.store.hasAgentContribution(); byId<HTMLSpanElement>("revision").textContent = `r${this.store.document.revision}`; const submit = byId<HTMLButtonElement>("submit-turn"); const busy = Boolean(this.store.document.turn && ["queued", "claimed", "planning", "working"].includes(this.store.document.turn.status)); submit.classList.toggle("is-waiting", busy); submit.disabled = busy; this.updateZoom(); this.updateContextPrompt(); }
   private updateZoom(): void { byId<HTMLSpanElement>("zoom").textContent = `${Math.round(this.renderer.camera.zoom * 100)}%`; }
@@ -406,7 +413,7 @@ export class WhiteboardApp {
     if (!bounds) return;
     const top = this.renderer.screen({ x: (bounds.minX + bounds.maxX) / 2, y: bounds.minY });
     tools.style.left = `${Math.max(170, Math.min(window.innerWidth - 170, top.x))}px`; tools.style.top = `${Math.max(72, top.y - 54)}px`;
-    tools.classList.toggle("has-text", this.selectedElements().some((element) => element.type === "text"));
+    const selected = this.selectedElements(); tools.classList.toggle("has-text", selected.some((element) => element.type === "text")); tools.classList.toggle("has-note", selected.some((element) => element.semanticRole === "note" || element.semanticRole === "note-body")); byId<HTMLButtonElement>("attach-agent").classList.toggle("is-active", selected.some((element) => element.agentAttached));
   }
 
   private updateAgentMarkerHover(event: PointerEvent): void {

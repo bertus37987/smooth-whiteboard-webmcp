@@ -70,6 +70,9 @@ svg { display: block; width: 20px; height: 20px; min-width: 20px; fill: none; st
 .selection-tools button { width: 32px; min-width: 32px; height: 32px; }
 .selection-tools .text-actions { display: none; padding-inline: 3px; border-inline: 1px solid var(--gray-1); }
 .selection-tools.has-text .text-actions { display: inline-flex; }
+.selection-tools .attach-action { display: none; }
+.selection-tools.has-note .attach-action { display: grid; place-items: center; }
+.selection-tools .attach-action.is-active { color: var(--white); background: var(--black); }
 #delete-selection { color: #c62828; }
 .review { right: 16px; bottom: 18px; display: flex; align-items: center; gap: 6px; min-height: 44px; padding: 5px 6px 5px 16px; border-radius: 14px; box-shadow: 0 12px 36px rgba(8,8,8,.12); }
 .review > span { margin-right: auto; color: var(--gray-3); font-size: 12px; }

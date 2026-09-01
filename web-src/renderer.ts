@@ -92,6 +92,7 @@ export class BoardRenderer {
       if (element.type === "image") {
         const image = cachedImage(element, () => this.request()); if (image.complete && image.naturalWidth > 0) context.drawImage(image, element.x, element.y, element.width, element.height);
       } else { context.save(); context.globalAlpha = element.opacity ?? 1; drawBoardElement(context, element); context.restore(); }
+      if (element.agentAttached && element.semanticRole === "note") this.drawAttachmentBadge(context, element);
     }
     this.drawAgentContributionHalo(context);
     this.drawInstructionInk(context); this.drawSelection(context); this.drawLasso(context); context.restore();
@@ -120,6 +121,12 @@ export class BoardRenderer {
     const active = this.elements().filter((element) => this.activeAgentIds.has(element.id)); const box = boardBounds(active); if (!box) return;
     const proxy: PageElement = { type: "shape", id: "agent-contribution", kind: "rectangle", points: [{ x: box.minX, y: box.minY, pressure: .5 }, { x: box.maxX, y: box.maxY, pressure: .5 }], color: "#ff8796", size: 1, closed: true };
     this.drawAgentHalo(context, proxy);
+  }
+
+  private drawAttachmentBadge(context: CanvasRenderingContext2D, element: PageElement): void {
+    const box = elementBounds(element); const radius = 12 / this.camera.zoom; const x = box.maxX - radius * .4; const y = box.minY + radius * .4;
+    context.save(); context.fillStyle = "#080808"; context.strokeStyle = "#ffffff"; context.lineWidth = 2 / this.camera.zoom; context.beginPath(); context.arc(x, y, radius, 0, Math.PI * 2); context.fill(); context.stroke();
+    context.strokeStyle = "#ffffff"; context.lineWidth = 1.7 / this.camera.zoom; context.lineCap = "round"; context.beginPath(); context.arc(x - 1 / this.camera.zoom, y, radius * .44, -.8, 2.45); context.stroke(); context.restore();
   }
 
   private drawConnectionLabel(context: CanvasRenderingContext2D, element: Extract<PageElement, { type: "text" }>): void {
