@@ -50,6 +50,8 @@ export class WhiteboardApp {
   private opacity = 1;
   private interaction: Interaction | null = null;
   private spaceDown = false;
+  private readonly touchPointers = new Map<number, { x: number; y: number }>();
+  private pinch: { distance: number; x: number; y: number } | null = null;
   private readonly status = byId<HTMLSpanElement>("status");
   private readonly review = byId<HTMLDivElement>("review");
   private readonly agentMarkerTip = byId<HTMLDivElement>("agent-marker-tip");
@@ -141,15 +143,34 @@ export class WhiteboardApp {
     this.canvas.addEventListener("pointerup", (event) => this.pointerUp(event));
     this.canvas.addEventListener("pointercancel", (event) => this.pointerUp(event));
     this.canvas.addEventListener("pointerleave", () => { this.agentMarkerTip.hidden = true; });
-    this.canvas.addEventListener("wheel", (event) => { event.preventDefault(); this.renderer.zoomAt(event.clientX, event.clientY, Math.exp(-event.deltaY * 0.0012)); this.updateZoom(); this.updateContextPrompt(); }, { passive: false });
+    this.canvas.addEventListener("wheel", (event) => { event.preventDefault(); const delta = event.deltaY * (event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16 : 1); this.zoomAt(event.clientX, event.clientY, Math.exp(-delta * 0.0012)); }, { passive: false });
     this.canvas.addEventListener("dblclick", (event) => {
       if (this.tool !== "select" || this.store.hasAgentContribution()) return; const point = this.renderer.world(event.clientX, event.clientY); const hit = this.renderer.hit(point);
       this.beginText(point, hit?.type === "text" ? hit : undefined);
     });
   }
 
+  private zoomAt(clientX: number, clientY: number, factor: number): void {
+    this.renderer.zoomAt(clientX, clientY, factor); this.updateZoom(); this.updateContextPrompt();
+  }
+
+  private beginPinch(): void {
+    const points = [...this.touchPointers.values()]; if (points.length < 2) return;
+    const [first, second] = points; this.pinch = { distance: Math.max(1, Math.hypot(second.x - first.x, second.y - first.y)), x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 };
+  }
+
+  private updatePinch(): void {
+    const points = [...this.touchPointers.values()]; if (!this.pinch || points.length < 2) return;
+    const [first, second] = points; const distance = Math.max(1, Math.hypot(second.x - first.x, second.y - first.y)); const x = (first.x + second.x) / 2; const y = (first.y + second.y) / 2;
+    this.zoomAt(x, y, distance / this.pinch.distance); this.pinch = { distance, x, y };
+  }
+
   private pointerDown(event: PointerEvent): void {
     const stylusEraser = event.pointerType === "pen" && (event.button === 5 || (event.buttons & 32) === 32);
+    if (event.pointerType === "touch") {
+      this.touchPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      if (this.touchPointers.size >= 2) { event.preventDefault(); this.interaction = null; this.beginPinch(); return; }
+    }
     if (event.button !== 0 && event.button !== 1 && !stylusEraser) return; event.preventDefault(); this.canvas.setPointerCapture(event.pointerId);
     const point = this.renderer.world(event.clientX, event.clientY); const pan = event.button === 1 || this.spaceDown || this.tool === "hand" || event.pointerType === "touch";
     if (pan) { this.interaction = { mode: "pan", pointerId: event.pointerId, startClient: { x: event.clientX, y: event.clientY }, startWorld: point }; return; }
@@ -199,6 +220,10 @@ export class WhiteboardApp {
   }
 
   private pointerMove(event: PointerEvent): void {
+    if (event.pointerType === "touch" && this.touchPointers.has(event.pointerId)) {
+      this.touchPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      if (this.pinch && this.touchPointers.size >= 2) { event.preventDefault(); this.updatePinch(); return; }
+    }
     const interaction = this.interaction;
     if (!interaction) { this.updateAgentMarkerHover(event); if (this.tool === "select") this.canvas.style.cursor = this.resizeCursor(this.renderer.selectionHandleAt(this.renderer.world(event.clientX, event.clientY))); return; }
     if (interaction.pointerId !== event.pointerId) return; event.preventDefault();
@@ -233,6 +258,10 @@ export class WhiteboardApp {
   }
 
   private pointerUp(event: PointerEvent): void {
+    if (event.pointerType === "touch") {
+      this.touchPointers.delete(event.pointerId);
+      if (this.pinch) { this.pinch = this.touchPointers.size >= 2 ? this.pinch : null; this.interaction = null; this.release(event); return; }
+    }
     const interaction = this.interaction; if (!interaction || interaction.pointerId !== event.pointerId) { this.release(event); return; }
     if (interaction.mode === "lasso") {
       const unlocked = this.store.document.elements.filter((element) => !element.locked); const hits = this.store.expandGroupIds(lassoElements(unlocked, this.renderer.lasso)).filter((id) => !this.store.document.elements.find((element) => element.id === id)?.locked);
