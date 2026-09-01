@@ -42,7 +42,8 @@ export function drawShape(context: CanvasRenderingContext2D, shape: ShapeElement
     const box = shape.points.reduce((result, point) => ({ minX: Math.min(result.minX, point.x), minY: Math.min(result.minY, point.y), maxX: Math.max(result.maxX, point.x), maxY: Math.max(result.maxY, point.y) }), { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity });
     context.ellipse((box.minX + box.maxX) / 2, (box.minY + box.maxY) / 2, Math.abs(box.maxX - box.minX) / 2, Math.abs(box.maxY - box.minY) / 2, 0, 0, Math.PI * 2);
   } else if (shape.kind === "rectangle" && shape.points.length === 2) {
-    const end = shape.points[1]; context.rect(Math.min(first.x, end.x), Math.min(first.y, end.y), Math.abs(end.x - first.x), Math.abs(end.y - first.y));
+    const end = shape.points[1]; const x = Math.min(first.x, end.x); const y = Math.min(first.y, end.y); const width = Math.abs(end.x - first.x); const height = Math.abs(end.y - first.y); const radius = Math.max(0, Math.min(shape.radius ?? 0, width / 2, height / 2));
+    if (radius > 0) context.roundRect(x, y, width, height, radius); else context.rect(x, y, width, height);
   } else {
     context.moveTo(first.x, first.y); for (const point of shape.points.slice(1)) context.lineTo(point.x, point.y);
     if (shape.closed) context.closePath();

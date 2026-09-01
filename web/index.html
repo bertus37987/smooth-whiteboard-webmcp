@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#ffffff">
   <meta name="description" content="Ein gemeinsames, unendliches Whiteboard für Mensch und Browser-Agent.">
   <title>Shared Whiteboard</title>
-  <link rel="stylesheet" href="./app.css">
+  <link rel="stylesheet" href="./app.css?v=0.10.0">
 </head>
 <body>
   <main class="workspace" aria-label="Gemeinsames unendliches Whiteboard">
@@ -46,12 +46,12 @@
       <button type="button" id="clear" aria-label="Whiteboard leeren" title="Whiteboard leeren"></button>
     </section>
 
-    <section id="lasso-prompt" class="lasso-prompt" aria-label="Anweisung für die Lasso-Auswahl" hidden>
+    <section id="agent-bar" class="agent-bar" aria-label="Anweisung an den Canvas-Agenten">
       <form id="agent-form">
-        <label for="instruction">Auswahl</label>
-        <input id="instruction" name="instruction" type="text" autocomplete="off" aria-label="Anweisung für die Lasso-Auswahl">
+        <label id="request-scope" for="instruction">Canvas</label>
+        <input id="instruction" name="instruction" type="text" autocomplete="off" aria-label="Anweisung an den Canvas-Agenten">
         <button type="submit" id="send" aria-label="An Agent senden" title="An Agent senden"></button>
-        <button type="button" id="close-prompt" aria-label="Auswahlleiste schließen" title="Schließen"></button>
+        <button type="button" id="clear-context" aria-label="Auswahlkontext entfernen" title="Auswahlkontext entfernen" hidden></button>
       </form>
     </section>
     <section id="selection-tools" class="selection-tools" aria-label="Auswahl bearbeiten" hidden>
@@ -73,6 +73,6 @@
     <div class="activity" role="status" aria-live="polite"><span id="status"></span></div>
     <input id="image-input" type="file" accept="image/png,image/jpeg" hidden>
   </main>
-  <script type="module" src="./app.js"></script>
+  <script type="module" src="./app.js?v=0.10.0"></script>
 </body>
 </html>

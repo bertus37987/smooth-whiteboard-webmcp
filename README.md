@@ -14,19 +14,22 @@ This project turns the existing Smooth Handwriting vector canvas into a standalo
 - Selection, edge-aware multi-element lasso, moving, eight-handle group resizing, duplication, layer ordering and deletion
 - Custom multi-line text boxes that can be freely dragged, resized, restyled and edited by double-clicking
 - Smart labelled connectors that stay attached to object edges when either endpoint moves or resizes
+- Grouping, alignment and equal-gap distribution for agent-created or human-created layouts
 - Undo, redo, local browser persistence and JSON import/export
-- Human instruction bound to the current lasso selection or the complete board
+- Long thin command bar bound to the current lasso selection or the complete board
 - Progressive agent operations against the latest board revision
+- Structured editable visuals: UI wireframes, flowcharts, mindmaps, research briefs, calculation steps and plotted graphs
 - Human-editable agent output with a single Accept / Undo decision
-- Rounded pen-first black, white and grey interface with semantic controls, contextual selection actions and no logo or filler content
+- Rounded pen-first black, white and grey interface with cache-safe high-contrast icons, contextual selection actions and no logo or filler content
 
 ## WebMCP interface
 
-The app registers three meaningful tools through `document.modelContext`:
+The app registers four meaningful tools through `document.modelContext`:
 
 1. `inspect_whiteboard` returns the latest revision, viewport, pending human instruction, selection bounds and editable elements.
-2. `apply_whiteboard_changes` creates, connects, moves, resizes, styles, reorders, edits or deletes objects progressively. A stale `baseRevision` is rejected so an agent cannot overwrite newer human work.
-3. `complete_whiteboard_contribution` ends a contribution and exposes Accept / Undo to the human.
+2. `apply_whiteboard_changes` creates custom text, points/strokes, arbitrary polygons, shapes and arrows; it also edits path points, connects, moves, resizes, rewrites, styles, groups, duplicates, aligns, distributes, reorders or deletes objects progressively. A stale `baseRevision` is rejected so an agent cannot overwrite newer human work.
+3. `create_structured_visual` builds a coherent UI proposal, flowchart, mindmap, research brief, calculation or graph from a compact specification and compiles it into ordinary editable objects.
+4. `complete_whiteboard_contribution` ends a contribution and exposes Accept / Undo to the human.
 
 The board state—not an agent's previous output—is always the source of truth. Agent-created items are normal canvas items, so the human can move, resize, rewrite or remove them before the next inspection.
 
@@ -60,6 +63,7 @@ The earlier Obsidian plugin can still be built with `npm run build`. It keeps ve
 
 - `src/document.ts`, `src/strokes.ts`, `src/shapes.ts`, `src/rendering.ts`: reused canvas core
 - `web-src/model.ts`: infinite-board document and canvas operations
+- `web-src/compositions.ts`: high-level editable visual composers
 - `web-src/store.ts`: revisioned state, persistence, history and agent rollback
 - `web-src/renderer.ts`: infinite-canvas renderer, camera, selection and lasso
 - `web-src/app.ts`: human interactions and collaboration UI
@@ -69,3 +73,5 @@ The earlier Obsidian plugin can still be built with `npm run build`. It keeps ve
 ## License
 
 MIT. The bundled Google Ink Stroke Modeler dependency remains under Apache-2.0; see `THIRD_PARTY_NOTICES.md`.
+
+The finished-product roadmap and release gates are documented in [`docs/PRODUCT_PLAN.md`](docs/PRODUCT_PLAN.md).

@@ -4,6 +4,7 @@ import { optimizeShape } from "../src/shapes";
 import { BoardRenderer, SelectionHandle } from "./renderer";
 import { BoardStore } from "./store";
 import { BoardTool, CanvasOperation, boardBounds, elementSummary, estimateTextHeight, isCanvasOperation, lassoElements, scaleElement, translateElement, validBoard } from "./model";
+import { VisualCompositionInput, composeVisual, isVisualComposition } from "./compositions";
 import { registerWhiteboardTools } from "./webmcp";
 
 const icons: Record<string, string> = {
@@ -16,7 +17,7 @@ const icons: Record<string, string> = {
   back: '<rect x="4" y="8" width="10" height="10" rx="1"/><path d="M10 8V4h10v10h-6"/>', front: '<rect x="10" y="4" width="10" height="10" rx="1"/><path d="M14 14v4H4V8h6"/>', minus: '<path d="M6 12h12"/>', plus: '<path d="M12 6v12M6 12h12"/>'
 };
 
-function icon(name: string): string { return `<svg viewBox="0 0 24 24" aria-hidden="true">${icons[name]}</svg>`; }
+function icon(name: string): string { return `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${icons[name]}</svg>`; }
 function uuid(prefix: string): string { return `${prefix}-${crypto.randomUUID()}`; }
 function byId<T extends HTMLElement>(id: string): T { const element = document.getElementById(id); if (!element) throw new Error(`Missing ${id}`); return element as T; }
 
@@ -34,7 +35,6 @@ export class WhiteboardApp {
   private readonly renderer = new BoardRenderer(this.canvas, () => this.store.document.elements, () => new Set(Object.values(this.store.document.connections ?? {}).map((connection) => connection.labelId).filter((id): id is string => Boolean(id))));
   private tool: BoardTool = "pen";
   private penColor = "#080808";
-  private lassoPromptOpen = false;
   private interaction: Interaction | null = null;
   private spaceDown = false;
   private readonly status = byId<HTMLSpanElement>("status");
@@ -48,7 +48,7 @@ export class WhiteboardApp {
     this.bindToolbar(); this.bindSelectionTools(); this.bindCanvas(); this.bindKeyboard(); this.bindCollaboration(); this.bindFiles();
     this.store.addEventListener("change", () => { this.renderer.request(); this.updateUi(); });
     this.renderer.request(); this.updateUi();
-    void registerWhiteboardTools({ inspect: (scope) => this.inspect(scope), apply: (operations, revision) => this.applyAgentOperations(operations, revision), complete: (summary) => this.completeAgent(summary) }, this.abort.signal)
+    void registerWhiteboardTools({ inspect: (scope) => this.inspect(scope), apply: (operations, revision) => this.applyAgentOperations(operations, revision), compose: (input, revision) => this.composeAgentVisual(input, revision), complete: (summary) => this.completeAgent(summary) }, this.abort.signal)
       .then((available) => this.setStatus(available ? "WebMCP bereit" : "Browser ohne WebMCP – Zeichnen bleibt vollständig verfügbar", 2600))
       .catch(() => this.setStatus("WebMCP konnte nicht registriert werden", 2600));
   }
@@ -105,7 +105,7 @@ export class WhiteboardApp {
       this.store.document.elements.push(stroke); this.interaction = { mode: "draw", pointerId: event.pointerId, startClient: { x: event.clientX, y: event.clientY }, startWorld: point, elementId: stroke.id }; this.renderer.request(); return;
     }
     if (this.tool === "rectangle" || this.tool === "ellipse" || this.tool === "arrow") {
-      this.store.checkpoint(); const shape: ShapeElement = { type: "shape", id: uuid("shape"), kind: this.tool, points: [point, { ...point }], color: this.penColor, size: 3, closed: this.tool !== "arrow", fillColor: "#c0c0c0", fillOpacity: 0 };
+      this.store.checkpoint(); const shape: ShapeElement = { type: "shape", id: uuid("shape"), kind: this.tool, points: [point, { ...point }], color: this.penColor, size: 3, closed: this.tool !== "arrow", fillColor: "#c0c0c0", fillOpacity: 0, radius: this.tool === "rectangle" ? 14 : undefined };
       this.store.document.elements.push(shape); this.interaction = { mode: "shape", pointerId: event.pointerId, startClient: { x: event.clientX, y: event.clientY }, startWorld: point, elementId: shape.id }; this.renderer.request(); return;
     }
     if (this.tool === "lasso") { this.renderer.lasso = [point]; this.interaction = { mode: "lasso", pointerId: event.pointerId, startClient: { x: event.clientX, y: event.clientY }, startWorld: point, additive: event.shiftKey }; this.renderer.request(); return; }
@@ -121,10 +121,10 @@ export class WhiteboardApp {
       this.interaction = { mode: "resize", pointerId: event.pointerId, startClient: { x: event.clientX, y: event.clientY }, startWorld: point, before: new Map(selected.map((element) => [element.id, structuredClone(element)])), beforeBounds: boardBounds(selected) ?? undefined, handle }; return;
     }
     const hit = this.renderer.hit(point);
-    if (!hit) { this.renderer.selectionIds.clear(); this.lassoPromptOpen = false; this.updateContextPrompt(); this.renderer.request(); return; }
-    this.lassoPromptOpen = false; this.updateContextPrompt();
-    if (!event.shiftKey && !this.renderer.selectionIds.has(hit.id)) this.renderer.selectionIds = new Set([hit.id]);
-    else if (event.shiftKey) this.renderer.selectionIds.has(hit.id) ? this.renderer.selectionIds.delete(hit.id) : this.renderer.selectionIds.add(hit.id);
+    if (!hit) { this.renderer.selectionIds.clear(); this.updateContextPrompt(); this.renderer.request(); return; }
+    this.updateContextPrompt(); const hitIds = this.store.expandGroupIds([hit.id]);
+    if (!event.shiftKey && !hitIds.every((id) => this.renderer.selectionIds.has(id))) this.renderer.selectionIds = new Set(hitIds);
+    else if (event.shiftKey) { const remove = hitIds.every((id) => this.renderer.selectionIds.has(id)); hitIds.forEach((id) => remove ? this.renderer.selectionIds.delete(id) : this.renderer.selectionIds.add(id)); }
     const elements = this.store.document.elements.filter((element) => this.renderer.selectionIds.has(element.id));
     this.interaction = { mode: "move", pointerId: event.pointerId, startClient: { x: event.clientX, y: event.clientY }, startWorld: point, before: new Map(elements.map((element) => [element.id, structuredClone(element)])) }; this.updateContextPrompt(); this.renderer.request();
   }
@@ -157,9 +157,9 @@ export class WhiteboardApp {
   private pointerUp(event: PointerEvent): void {
     const interaction = this.interaction; if (!interaction || interaction.pointerId !== event.pointerId) { this.release(event); return; }
     if (interaction.mode === "lasso") {
-      const hits = lassoElements(this.store.document.elements, this.renderer.lasso);
+      const hits = this.store.expandGroupIds(lassoElements(this.store.document.elements, this.renderer.lasso));
       this.renderer.selectionIds = interaction.additive ? new Set([...this.renderer.selectionIds, ...hits]) : new Set(hits);
-      this.renderer.lasso = []; this.lassoPromptOpen = this.renderer.selectionIds.size > 0; this.setTool("select"); this.updateContextPrompt(); this.renderer.request();
+      this.renderer.lasso = []; this.setTool("select"); this.updateContextPrompt(); this.renderer.request();
     } else if (interaction.mode === "draw") {
       const strokeIndex = this.store.document.elements.findIndex((element) => element.id === interaction.elementId);
       const stroke = this.store.document.elements[strokeIndex];
@@ -212,10 +212,10 @@ export class WhiteboardApp {
 
   private bindCollaboration(): void {
     byId<HTMLButtonElement>("accept").innerHTML = `${icon("check")}<span>Accept</span>`; byId<HTMLButtonElement>("undo-agent").innerHTML = `${icon("close")}<span>Undo</span>`;
-    byId<HTMLButtonElement>("send").innerHTML = icon("send"); byId<HTMLButtonElement>("close-prompt").innerHTML = icon("close");
+    byId<HTMLButtonElement>("send").innerHTML = icon("send"); byId<HTMLButtonElement>("clear-context").innerHTML = icon("close");
     this.requestForm.addEventListener("submit", (event) => { event.preventDefault(); const instruction = this.instruction.value.trim(); if (!instruction) return;
-      this.store.checkpoint(); this.store.document.request = { id: uuid("request"), instruction, selectionIds: [...this.renderer.selectionIds], createdAt: new Date().toISOString(), state: "ready" }; this.store.changed(); this.instruction.value = ""; this.lassoPromptOpen = false; this.updateContextPrompt(); this.setStatus("Lasso-Anweisung ist für den Browser-Agenten bereit", 2600); });
-    byId<HTMLButtonElement>("close-prompt").addEventListener("click", () => { this.lassoPromptOpen = false; this.updateContextPrompt(); });
+      this.store.checkpoint(); this.store.document.request = { id: uuid("request"), instruction, selectionIds: [...this.renderer.selectionIds], createdAt: new Date().toISOString(), state: "ready" }; this.store.changed(); this.instruction.value = ""; this.updateContextPrompt(); this.setStatus(this.renderer.selectionIds.size ? "Auswahl-Anweisung ist für den Agenten bereit" : "Canvas-Anweisung ist für den Agenten bereit", 2600); });
+    byId<HTMLButtonElement>("clear-context").addEventListener("click", () => { this.renderer.selectionIds.clear(); this.updateContextPrompt(); this.renderer.request(); });
     byId<HTMLButtonElement>("accept").addEventListener("click", () => { this.store.acceptAgentContribution(); this.renderer.activeAgentIds.clear(); this.setStatus("Agentenbeitrag übernommen", 1800); });
     byId<HTMLButtonElement>("undo-agent").addEventListener("click", () => { if (this.store.undoAgentContribution()) { this.renderer.activeAgentIds.clear(); this.setStatus("Agentenbeitrag zurückgenommen", 1800); } });
   }
@@ -231,18 +231,26 @@ export class WhiteboardApp {
   }
 
   private inspect(scope: "all" | "selection"): Record<string, unknown> {
-    const requestIds = this.store.document.request?.selectionIds ?? []; const ids = scope === "selection" ? (requestIds.length ? requestIds : [...this.renderer.selectionIds]) : null;
+    const requestIds = this.store.document.request?.state === "answered" ? [] : (this.store.document.request?.selectionIds ?? []); const ids = scope === "selection" ? (requestIds.length ? requestIds : [...this.renderer.selectionIds]) : null;
     const elements = ids ? this.store.document.elements.filter((element) => ids.includes(element.id)) : this.store.document.elements;
-    return { revision: this.store.document.revision, coordinateSystem: "Infinite 2D world coordinates; +x right, +y down", viewport: { ...this.renderer.camera, width: this.canvas.clientWidth, height: this.canvas.clientHeight }, pendingRequest: this.store.document.request, selectionBounds: boardBounds(elements), elements: elements.map(elementSummary) };
+    return { revision: this.store.document.revision, coordinateSystem: "Infinite 2D world coordinates; +x right, +y down", viewport: { ...this.renderer.camera, width: this.canvas.clientWidth, height: this.canvas.clientHeight }, pendingRequest: this.store.document.request, selectionBounds: boardBounds(elements), elements: elements.map((element) => ({ ...elementSummary(element), groupId: this.store.groupIdFor(element.id) ?? null })) };
   }
 
-  private async applyAgentOperations(operations: CanvasOperation[], baseRevision?: number): Promise<Record<string, unknown>> {
+  private async applyAgentOperations(operations: CanvasOperation[], baseRevision?: number, maxOperations = 120, delay = 65): Promise<Record<string, unknown>> {
     if (!Array.isArray(operations) || operations.length === 0) return { ok: false, error: "No operations supplied" };
-    if (operations.length > 80 || operations.some((operation) => !isCanvasOperation(operation))) return { ok: false, error: "invalid_operations", instruction: "Use the operation schema exactly and keep coordinates finite." };
+    if (operations.length > maxOperations || operations.some((operation) => !isCanvasOperation(operation))) return { ok: false, error: "invalid_operations", instruction: `Use the operation schema exactly, keep coordinates finite, and stay below ${maxOperations} operations.` };
     if (baseRevision !== undefined && baseRevision !== this.store.document.revision) return { ok: false, error: "stale_revision", currentRevision: this.store.document.revision, instruction: "Inspect the whiteboard again before editing." };
-    this.store.beginAgentContribution(); this.updateUi(); const created: string[] = [];
-    for (const operation of operations.slice(0, 80)) { const ids = this.store.applyOperation(operation, "agent"); created.push(...ids); this.renderer.activeAgentIds = new Set([...this.renderer.activeAgentIds, ...ids]); this.store.changed(); await new Promise((resolve) => setTimeout(resolve, 90)); }
+    const createsElement = new Set(["create_text", "create_shape", "create_arrow", "create_stroke", "create_polygon", "connect"]); const explicitIds = operations.filter((operation) => createsElement.has(operation.type) && "id" in operation && typeof operation.id === "string").map((operation) => (operation as { id: string }).id); const existing = new Set(this.store.document.elements.map((element) => element.id));
+    if (new Set(explicitIds).size !== explicitIds.length || explicitIds.some((id) => existing.has(id))) return { ok: false, error: "id_conflict", instruction: "Use unique IDs that are not already present on the board; inspect again if needed." };
+    this.store.beginAgentContribution(); this.updateUi(); this.setStatus("Agent arbeitet auf dem Canvas …"); const created: string[] = [];
+    for (const operation of operations.slice(0, maxOperations)) { const ids = this.store.applyOperation(operation, "agent"); created.push(...ids); this.renderer.activeAgentIds = new Set([...this.renderer.activeAgentIds, ...ids]); this.store.changed(); await new Promise((resolve) => setTimeout(resolve, delay)); }
     return { ok: true, revision: this.store.document.revision, createdIds: created, message: "Changes are visible and remain fully editable. Call complete_whiteboard_contribution when finished." };
+  }
+
+  private async composeAgentVisual(input: VisualCompositionInput, baseRevision?: number): Promise<Record<string, unknown>> {
+    if (!isVisualComposition(input)) return { ok: false, error: "invalid_visual", instruction: "Use one supported visual kind and provide valid nodes, sections, steps, axes or series." };
+    const operations = composeVisual(input); if (!operations.length) return { ok: false, error: "empty_visual" };
+    return this.applyAgentOperations(operations, baseRevision, 240, 35);
   }
 
   private completeAgent(summary: string): Record<string, unknown> {
@@ -252,8 +260,8 @@ export class WhiteboardApp {
   private clearBoard(): void { if (this.store.document.elements.length === 0 || !window.confirm("Gesamtes Whiteboard leeren?")) return; this.renderer.selectionIds.clear(); this.store.clear(); }
   private selectedElements(): PageElement[] { return this.store.document.elements.filter((element) => this.renderer.selectionIds.has(element.id)); }
   private duplicateSelection(): void {
-    const selected = this.selectedElements(); if (!selected.length) return; this.store.checkpoint(); const copies = selected.map((element) => { const copy = structuredClone(element); copy.id = uuid(element.type); translateElement(copy, 24, 24); return copy; });
-    this.store.document.elements.push(...copies); this.renderer.selectionIds = new Set(copies.map((element) => element.id)); this.lassoPromptOpen = false; this.store.changed();
+    const selected = this.selectedElements(); if (!selected.length) return; this.store.checkpoint(); const created = this.store.applyOperation({ type: "duplicate", ids: selected.map((element) => element.id), dx: 24, dy: 24 }, "human");
+    this.renderer.selectionIds = new Set(created); this.store.changed();
   }
   private reorderSelection(direction: "front" | "back"): void { const ids = [...this.renderer.selectionIds]; if (!ids.length) return; this.store.checkpoint(); this.store.applyOperation({ type: "reorder", ids, direction }, "human"); this.store.changed(); }
   private resizeSelectedText(delta: number): void {
@@ -261,19 +269,18 @@ export class WhiteboardApp {
     for (const text of texts) { text.fontSize = Math.max(10, Math.min(180, text.fontSize + delta)); text.height = estimateTextHeight(text.text, text.width, text.fontSize); } this.store.changed();
   }
   private deleteSelection(): void {
-    const ids = [...this.renderer.selectionIds]; if (!ids.length) return; this.store.checkpoint(); this.store.applyOperation({ type: "delete", ids }, "human"); this.renderer.selectionIds.clear(); this.lassoPromptOpen = false; this.store.changed();
+    const ids = [...this.renderer.selectionIds]; if (!ids.length) return; this.store.checkpoint(); this.store.applyOperation({ type: "delete", ids }, "human"); this.renderer.selectionIds.clear(); this.store.changed();
   }
   private setStatus(text: string, duration = 0): void { this.status.textContent = text; if (duration) setTimeout(() => { if (this.status.textContent === text) this.status.textContent = ""; }, duration); }
   private updateUi(): void { this.review.hidden = !this.store.hasAgentContribution(); byId<HTMLSpanElement>("revision").textContent = `r${this.store.document.revision}`; this.updateZoom(); this.updateContextPrompt(); }
   private updateZoom(): void { byId<HTMLSpanElement>("zoom").textContent = `${Math.round(this.renderer.camera.zoom * 100)}%`; }
   private updateContextPrompt(): void {
-    const panel = byId<HTMLElement>("lasso-prompt"); const tools = byId<HTMLElement>("selection-tools"); const bounds = this.renderer.selectionBounds(); panel.hidden = !this.lassoPromptOpen || !bounds; tools.hidden = !bounds;
+    const tools = byId<HTMLElement>("selection-tools"); const bounds = this.renderer.selectionBounds(); tools.hidden = !bounds;
+    const count = this.store.selectionUnitCount([...this.renderer.selectionIds]); byId<HTMLElement>("request-scope").textContent = count ? `${count} ausgewählt` : "Canvas"; byId<HTMLButtonElement>("clear-context").hidden = count === 0;
     if (!bounds) return;
-    const anchor = this.renderer.screen({ x: (bounds.minX + bounds.maxX) / 2, y: bounds.maxY });
     const top = this.renderer.screen({ x: (bounds.minX + bounds.maxX) / 2, y: bounds.minY });
     tools.style.left = `${Math.max(170, Math.min(window.innerWidth - 170, top.x))}px`; tools.style.top = `${Math.max(72, top.y - 54)}px`;
     tools.classList.toggle("has-text", this.selectedElements().some((element) => element.type === "text"));
-    if (!panel.hidden) { panel.style.left = `${Math.max(220, Math.min(window.innerWidth - 220, anchor.x))}px`; panel.style.top = `${Math.min(window.innerHeight - 92, anchor.y + 18)}px`; }
   }
 }
 

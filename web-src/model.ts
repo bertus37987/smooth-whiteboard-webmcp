@@ -16,21 +16,29 @@ export interface WhiteboardDocument {
   agentElementIds: string[];
   request: CollaborationRequest | null;
   connections?: Record<string, { fromId: string; toId: string; labelId?: string }>;
+  groups?: Record<string, string[]>;
 }
 
 export type BoardTool = "select" | "hand" | "pen" | "rectangle" | "ellipse" | "arrow" | "text" | "image" | "lasso" | "eraser";
 
 export type CanvasOperation =
-  | { type: "create_text"; id?: string; x: number; y: number; text: string; fontSize?: number; width?: number }
-  | { type: "create_shape"; id?: string; kind: "rectangle" | "ellipse"; x: number; y: number; width: number; height: number; filled?: boolean }
-  | { type: "create_arrow"; id?: string; from: { x: number; y: number }; to: { x: number; y: number } }
-  | { type: "create_stroke"; id?: string; points: InkPoint[]; size?: number }
+  | { type: "create_text"; id?: string; x: number; y: number; text: string; fontSize?: number; width?: number; color?: string }
+  | { type: "create_shape"; id?: string; kind: "rectangle" | "ellipse"; x: number; y: number; width: number; height: number; filled?: boolean; color?: string; strokeWidth?: number; fillColor?: string; fillOpacity?: number; radius?: number }
+  | { type: "create_arrow"; id?: string; from: { x: number; y: number }; to: { x: number; y: number }; color?: string; strokeWidth?: number }
+  | { type: "create_stroke"; id?: string; points: InkPoint[]; size?: number; color?: string }
+  | { type: "create_polygon"; id?: string; points: InkPoint[]; closed?: boolean; color?: string; strokeWidth?: number; fillColor?: string; fillOpacity?: number }
   | { type: "translate"; ids: string[]; dx: number; dy: number }
   | { type: "resize"; id: string; x: number; y: number; width: number; height: number }
   | { type: "update_text"; id: string; text: string }
-  | { type: "update_style"; ids: string[]; color?: string; strokeWidth?: number; fillColor?: string; fillOpacity?: number; fontSize?: number }
+  | { type: "update_points"; id: string; points: InkPoint[] }
+  | { type: "update_style"; ids: string[]; color?: string; strokeWidth?: number; fillColor?: string; fillOpacity?: number; fontSize?: number; radius?: number }
   | { type: "reorder"; ids: string[]; direction: "front" | "back" }
-  | { type: "connect"; id?: string; fromId: string; toId: string; label?: string }
+  | { type: "connect"; id?: string; fromId: string; toId: string; label?: string; color?: string; strokeWidth?: number }
+  | { type: "align"; ids: string[]; alignment: "left" | "center-x" | "right" | "top" | "center-y" | "bottom" }
+  | { type: "distribute"; ids: string[]; axis: "horizontal" | "vertical"; gap?: number }
+  | { type: "duplicate"; ids: string[]; dx?: number; dy?: number }
+  | { type: "group"; ids: string[]; groupId?: string }
+  | { type: "ungroup"; groupId?: string; ids?: string[] }
   | { type: "delete"; ids: string[] };
 
 const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
@@ -41,21 +49,28 @@ export function isCanvasOperation(value: unknown): value is CanvasOperation {
   if (!value || typeof value !== "object") return false; const operation = value as Record<string, unknown>;
   switch (operation.type) {
     case "create_text": return finite(operation.x) && finite(operation.y) && typeof operation.text === "string";
-    case "create_shape": return (operation.kind === "rectangle" || operation.kind === "ellipse") && finite(operation.x) && finite(operation.y) && finite(operation.width) && finite(operation.height);
+    case "create_shape": return (operation.kind === "rectangle" || operation.kind === "ellipse") && finite(operation.x) && finite(operation.y) && finite(operation.width) && finite(operation.height) && (operation.radius === undefined || finite(operation.radius));
     case "create_arrow": return position(operation.from) && position(operation.to);
     case "create_stroke": return Array.isArray(operation.points) && operation.points.length > 1 && operation.points.every(position);
+    case "create_polygon": return Array.isArray(operation.points) && operation.points.length > 1 && operation.points.every(position);
     case "translate": return ids(operation.ids) && finite(operation.dx) && finite(operation.dy);
     case "resize": return typeof operation.id === "string" && finite(operation.x) && finite(operation.y) && finite(operation.width) && finite(operation.height);
     case "update_text": return typeof operation.id === "string" && typeof operation.text === "string";
+    case "update_points": return typeof operation.id === "string" && Array.isArray(operation.points) && operation.points.length > 1 && operation.points.every(position);
     case "update_style": return ids(operation.ids);
     case "reorder": return ids(operation.ids) && (operation.direction === "front" || operation.direction === "back");
     case "connect": return typeof operation.fromId === "string" && typeof operation.toId === "string";
+    case "align": return ids(operation.ids) && ["left", "center-x", "right", "top", "center-y", "bottom"].includes(String(operation.alignment));
+    case "distribute": return ids(operation.ids) && (operation.axis === "horizontal" || operation.axis === "vertical") && (operation.gap === undefined || finite(operation.gap));
+    case "duplicate": return ids(operation.ids) && (operation.dx === undefined || finite(operation.dx)) && (operation.dy === undefined || finite(operation.dy));
+    case "group": return ids(operation.ids) && operation.ids.length > 0 && (operation.groupId === undefined || typeof operation.groupId === "string");
+    case "ungroup": return typeof operation.groupId === "string" || ids(operation.ids);
     case "delete": return ids(operation.ids);
     default: return false;
   }
 }
 
-export const emptyBoard = (): WhiteboardDocument => ({ version: 1, revision: 0, elements: [], agentElementIds: [], request: null, connections: {} });
+export const emptyBoard = (): WhiteboardDocument => ({ version: 1, revision: 0, elements: [], agentElementIds: [], request: null, connections: {}, groups: {} });
 
 export function cloneBoard(document: WhiteboardDocument): WhiteboardDocument { return structuredClone(document); }
 
@@ -100,15 +115,16 @@ export function resizeElement(element: PageElement, x: number, y: number, width:
 
 function id(prefix: string): string { return `${prefix}-${crypto.randomUUID()}`; }
 
-export function operationElement(operation: Extract<CanvasOperation, { type: "create_text" | "create_shape" | "create_arrow" | "create_stroke" }>): PageElement {
+export function operationElement(operation: Extract<CanvasOperation, { type: "create_text" | "create_shape" | "create_arrow" | "create_stroke" | "create_polygon" }>): PageElement {
   if (operation.type === "create_text") {
     const fontSize = Math.max(12, Math.min(160, operation.fontSize ?? 32));
     const width = operation.width ?? Math.max(80, Math.min(520, operation.text.length * fontSize * 0.58));
-    return { type: "text", id: operation.id ?? id("text"), x: operation.x, baseline: operation.y + fontSize, width, height: estimateTextHeight(operation.text, width, fontSize), fontSize, color: "#000000", text: operation.text } satisfies TextElement;
+    return { type: "text", id: operation.id ?? id("text"), x: operation.x, baseline: operation.y + fontSize, width, height: estimateTextHeight(operation.text, width, fontSize), fontSize, color: operation.color ?? "#000000", text: operation.text } satisfies TextElement;
   }
-  if (operation.type === "create_arrow") return { type: "shape", id: operation.id ?? id("arrow"), kind: "arrow", points: [{ ...operation.from, pressure: 0.5 }, { ...operation.to, pressure: 0.5 }], color: "#000000", size: 3, closed: false } satisfies ShapeElement;
-  if (operation.type === "create_stroke") return { type: "stroke", id: operation.id ?? id("stroke"), color: "#000000", size: operation.size ?? 3, pressureSensitivity: 0.65, points: operation.points.map((point) => ({ ...point, pressure: point.pressure ?? 0.5 })) };
-  return { type: "shape", id: operation.id ?? id("shape"), kind: operation.kind, points: [{ x: operation.x, y: operation.y, pressure: 0.5 }, { x: operation.x + operation.width, y: operation.y + operation.height, pressure: 0.5 }], color: "#000000", size: 3, closed: true, fillColor: "#c0c0c0", fillOpacity: operation.filled ? 0.3 : 0 } satisfies ShapeElement;
+  if (operation.type === "create_arrow") return { type: "shape", id: operation.id ?? id("arrow"), kind: "arrow", points: [{ ...operation.from, pressure: 0.5 }, { ...operation.to, pressure: 0.5 }], color: operation.color ?? "#000000", size: operation.strokeWidth ?? 3, closed: false } satisfies ShapeElement;
+  if (operation.type === "create_stroke") return { type: "stroke", id: operation.id ?? id("stroke"), color: operation.color ?? "#000000", size: operation.size ?? 3, pressureSensitivity: 0.65, points: operation.points.map((point) => ({ ...point, pressure: point.pressure ?? 0.5 })) };
+  if (operation.type === "create_polygon") return { type: "shape", id: operation.id ?? id("polygon"), kind: operation.closed === false ? "line" : "polygon", points: operation.points.map((point) => ({ ...point, pressure: point.pressure ?? 0.5 })), color: operation.color ?? "#000000", size: operation.strokeWidth ?? 3, closed: operation.closed !== false, fillColor: operation.fillColor ?? "#ffffff", fillOpacity: operation.fillOpacity ?? 0 } satisfies ShapeElement;
+  return { type: "shape", id: operation.id ?? id("shape"), kind: operation.kind, points: [{ x: operation.x, y: operation.y, pressure: 0.5 }, { x: operation.x + operation.width, y: operation.y + operation.height, pressure: 0.5 }], color: operation.color ?? "#000000", size: operation.strokeWidth ?? 3, closed: true, fillColor: operation.fillColor ?? "#c0c0c0", fillOpacity: operation.fillOpacity ?? (operation.filled ? 0.3 : 0), radius: operation.kind === "rectangle" ? Math.max(0, operation.radius ?? 0) : undefined } satisfies ShapeElement;
 }
 
 export function estimateTextHeight(text: string, width: number, fontSize: number): number {
@@ -120,7 +136,7 @@ export function estimateTextHeight(text: string, width: number, fontSize: number
 export function elementSummary(element: PageElement): Record<string, unknown> {
   const bounds = elementBounds(element); const base = { id: element.id, type: element.type, bounds };
   if (element.type === "text") return { ...base, text: element.text, fontSize: element.fontSize, color: element.color, width: element.width, height: element.height };
-  if (element.type === "shape") return { ...base, kind: element.kind, points: element.points, color: element.color, strokeWidth: element.size, fillColor: element.fillColor, fillOpacity: element.fillOpacity ?? 0 };
+  if (element.type === "shape") return { ...base, kind: element.kind, points: element.points, color: element.color, strokeWidth: element.size, fillColor: element.fillColor, fillOpacity: element.fillOpacity ?? 0, radius: element.radius ?? 0 };
   if (element.type === "stroke") return { ...base, points: element.points, color: element.color, strokeWidth: element.size };
   if (element.type === "image") return { ...base, sourceName: element.sourceName ?? "image" };
   return base;

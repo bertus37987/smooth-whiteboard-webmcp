@@ -7,6 +7,8 @@ import { snapHighlightToWords, wordBoxes } from "../src/smart-highlight";
 import { InkPoint, InkStroke, beautifyStroke, modelCapturedStroke, pressureWidth, visibleInkColor } from "../src/strokes";
 import { connectionPoints, estimateTextHeight, isCanvasOperation, lassoElements, operationElement, scaleElement, translateElement } from "../web-src/model";
 import { BoardStore } from "../web-src/store";
+import { composeVisual, isVisualComposition } from "../web-src/compositions";
+import { registerWhiteboardTools } from "../web-src/webmcp";
 
 const point = (x: number, y: number): InkPoint => ({ x, y, pressure: 0.5 });
 const stroke = (points: InkPoint[]): InkStroke => ({ id: "stroke", color: "#111", size: 4, points });
@@ -93,6 +95,44 @@ connectedStore.applyOperation({ type: "delete", ids: ["target"] }, "human");
 connectedStore.changed();
 assert.equal(connectedStore.document.elements.some((element) => element.id === "link"), false, "deleting a connected node removes its dangling connector");
 assert.equal(connectedStore.document.agentElementIds.includes("link"), false, "removed connector no longer appears in the agent contribution metadata");
+
+const flowVisual = { kind: "flowchart" as const, id: "flow", title: "Ablauf", nodes: [
+  { id: "start", label: "Start", role: "primary" as const }, { id: "check", label: "Prüfen", role: "decision" as const }, { id: "done", label: "Fertig" }
+], edges: [{ fromId: "start", toId: "check" }, { fromId: "check", toId: "done", label: "ja" }] };
+assert.equal(isVisualComposition(flowVisual), true);
+const flowOperations = composeVisual(flowVisual);
+assert.ok(flowOperations.length >= 11 && flowOperations.every(isCanvasOperation), "flowchart composer emits only ordinary validated canvas operations");
+assert.ok(flowOperations.some((operation) => operation.type === "group") && flowOperations.some((operation) => operation.type === "connect"), "flowchart nodes stay editable as groups with smart connectors");
+const plotOperations = composeVisual({ kind: "plot", id: "plot", title: "f(x)", axes: { xMin: -2, xMax: 2, yMin: -1, yMax: 4 }, series: [{ label: "x²", points: [{ x: -2, y: 4 }, { x: 0, y: 0 }, { x: 2, y: 4 }] }] });
+assert.ok(plotOperations.every(isCanvasOperation) && plotOperations.some((operation) => operation.type === "create_stroke" && operation.id?.includes("series")), "plot composer creates editable graph strokes");
+const visualFixtures = [
+  { kind: "mindmap" as const, id: "mind", title: "Thema", nodes: [{ id: "root", label: "Kern" }, { id: "branch", label: "Ast", parentId: "root" }] },
+  { kind: "ui_wireframe" as const, id: "ui", title: "App", nodes: [{ id: "nav", label: "Navigation", role: "sidebar" as const }, { id: "cta", label: "Weiter", role: "button" as const }] },
+  { kind: "research_report" as const, id: "report", title: "Ergebnis", sections: [{ heading: "These", body: "Kurze Evidenz" }, { heading: "Fazit", body: "Nächster Schritt" }] }
+];
+for (const fixture of visualFixtures) { const operations = composeVisual(fixture); assert.ok(operations.length > 2 && operations.length <= 240 && operations.every(isCanvasOperation), `${fixture.kind} composer stays inside the progressive editable operation contract`); }
+
+storedBoards.clear(); const groupedStore = new BoardStore();
+for (const operation of composeVisual({ kind: "math_steps", id: "math", steps: [{ expression: "2x = 8" }, { expression: "x = 4", explanation: "durch 2 teilen" }] })) groupedStore.applyOperation(operation, "agent");
+groupedStore.changed(); const groupedShape = groupedStore.document.elements.find((element) => element.id === "math-step-0"); const groupedLabel = groupedStore.document.elements.find((element) => element.id === "math-step-0-label");
+const shapeBefore = groupedShape ? elementBounds(groupedShape) : null; const labelBefore = groupedLabel ? elementBounds(groupedLabel) : null;
+groupedStore.applyOperation({ type: "translate", ids: ["math-step-0"], dx: 50, dy: 25 }, "human"); groupedStore.changed();
+assert.equal(groupedShape && shapeBefore ? elementBounds(groupedShape).minX - shapeBefore.minX : 0, 50);
+assert.equal(groupedLabel && labelBefore ? elementBounds(groupedLabel).minX - labelBefore.minX : 0, 50, "moving a composed node keeps its text attached through grouping");
+assert.equal(isCanvasOperation({ type: "align", ids: ["a", "b"], alignment: "left" }), true);
+assert.equal(isCanvasOperation({ type: "distribute", ids: ["a", "b", "c"], axis: "horizontal", gap: 24 }), true);
+assert.equal(isCanvasOperation({ type: "create_polygon", id: "custom", closed: true, points: [point(0, 0), point(80, 0), point(40, 60)] }), true, "agent can create arbitrary editable vector drawings");
+assert.equal(isCanvasOperation({ type: "update_points", id: "custom", points: [point(0, 0), point(90, 10)] }), true, "agent can refine an existing custom path instead of replacing it");
+
+storedBoards.clear(); const layoutStore = new BoardStore();
+layoutStore.applyOperation({ type: "create_shape", id: "left", kind: "rectangle", x: 0, y: 40, width: 40, height: 30 }, "agent");
+layoutStore.applyOperation({ type: "create_shape", id: "middle", kind: "rectangle", x: 100, y: 80, width: 40, height: 30 }, "agent");
+layoutStore.applyOperation({ type: "create_shape", id: "right", kind: "rectangle", x: 260, y: 120, width: 40, height: 30 }, "agent");
+layoutStore.applyOperation({ type: "align", ids: ["left", "middle", "right"], alignment: "top" }, "agent");
+assert.deepEqual(["left", "middle", "right"].map((id) => elementBounds(layoutStore.document.elements.find((element) => element.id === id)!).minY), [40, 40, 40], "agent alignment acts on live editable objects");
+layoutStore.applyOperation({ type: "distribute", ids: ["left", "middle", "right"], axis: "horizontal", gap: 30 }, "agent");
+const layoutBoxes = ["left", "middle", "right"].map((id) => elementBounds(layoutStore.document.elements.find((element) => element.id === id)!));
+assert.deepEqual([layoutBoxes[1].minX - layoutBoxes[0].maxX, layoutBoxes[2].minX - layoutBoxes[1].maxX], [30, 30], "agent can create exact equal spacing for UI proposals");
 
 assert.equal(optimizeShape(stroke([point(0, 1), point(30, -1), point(60, 2), point(100, 0)])).kind, "line");
 assert.equal(optimizeShape(stroke(modelCapturedStroke([point(0, 1), point(30, -1), point(60, 2), point(100, 0)], true))).kind, "line", "ink modeling keeps an intentional straight-line gesture recognizable");
@@ -275,4 +315,12 @@ const snappedLower = snapHighlightToWords(twoRows, { ...marker(28, 105), y: 143 
 assert.deepEqual([snappedLower!.x1, snappedLower!.x2], [12, 128], "pen marker selects only the touched writing row");
 assert.ok(snappedLower!.y > 115, "marker stays on the lower row instead of jumping upward");
 
-console.log("core tests: ok");
+void (async () => {
+  const registered: Array<{ name: string; inputSchema?: Record<string, unknown> }> = [];
+  Object.defineProperty(globalThis, "document", { configurable: true, value: { modelContext: { registerTool: (tool: { name: string; inputSchema?: Record<string, unknown> }) => { registered.push(tool); } } } });
+  const available = await registerWhiteboardTools({ inspect: () => ({}), apply: async () => ({}), compose: async () => ({}), complete: () => ({}) }, new AbortController().signal);
+  assert.equal(available, true); assert.deepEqual(registered.map((tool) => tool.name), ["inspect_whiteboard", "apply_whiteboard_changes", "create_structured_visual", "complete_whiteboard_contribution"]);
+  const visualTool = registered.find((tool) => tool.name === "create_structured_visual");
+  assert.ok(JSON.stringify(visualTool?.inputSchema).includes("ui_wireframe") && JSON.stringify(visualTool?.inputSchema).includes("math_steps"), "WebMCP advertises high-level UI, learning and diagram capabilities");
+  console.log("core tests: ok");
+})().catch((error) => { console.error(error); process.exitCode = 1; });

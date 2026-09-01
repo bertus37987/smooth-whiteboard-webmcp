@@ -41,6 +41,8 @@ export interface ShapeElement {
   closed: boolean;
   fillColor?: string;
   fillOpacity?: number;
+  /** Optional editable corner radius for rectangular UI and diagram shapes. */
+  radius?: number;
 }
 
 export interface ImageElement {
