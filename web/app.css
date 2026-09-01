@@ -25,3 +25,12 @@ button{display:inline-grid;place-items:center;min-width:44px;height:44px;padding
 .text-editor-shell{border:0;background:transparent;box-shadow:none;overflow:visible}.text-editor-shell .text-controls{border-bottom:0;background:transparent}.text-editor-shell textarea{background:transparent}
 @media(max-width:1050px){.toolbar .utility #fit,.toolbar .utility #zoom,.toolbar .utility #revision,.toolbar .utility .file-label{display:none}}
 @media(max-width:820px){.toolbar .utility{position:static;height:42px;padding:0}.toolbar .utility button{height:38px}.toolbar{left:10px;max-width:calc(100vw - 20px)}}
+
+/* Keep the context visible, but let the chip itself describe what is sent. */
+.prompt-dock{width:min(340px,calc(100vw - 28px))}.prompt-dock .scope-chips{align-self:center;min-width:96px;max-width:150px;padding-left:2px}.prompt-dock .scope-chips span{max-width:148px}
+
+/* The same command bar at a denser, tablet-friendly scale. */
+.toolbar{height:48px;gap:2px;padding:5px;border-radius:18px}.toolbar button{min-width:36px;width:36px;height:36px;padding:0;border-radius:11px}.toolbar-divider{height:22px;margin:0 2px}.color-picker-toggle{width:32px!important;min-width:32px!important;height:32px!important}.color-picker-toggle span{inset:8px}
+.toolbar .utility{height:36px;font-size:11px}.toolbar .utility button,.toolbar .utility .file-label{min-width:34px;width:auto;height:36px;padding:0 7px}.toolbar .utility span{padding:0 4px}
+@media(max-width:560px){.prompt-dock .scope-chips{min-width:82px;max-width:104px}.prompt-dock .scope-chips span{max-width:100px}}
+@media(max-width:480px){.toolbar{height:44px}.toolbar button{width:33px;min-width:33px;height:34px}.toolbar .utility button{width:33px;min-width:33px;height:34px;padding:0}.toolbar .utility #export-toggle{font-size:0}.toolbar .utility #export-toggle::after{content:"↗";font-size:18px}.prompt-dock{width:calc(100vw - 20px)}}
