@@ -34,6 +34,10 @@ function drawArrowHead(context: CanvasRenderingContext2D, start: { x: number; y:
 
 export function drawShape(context: CanvasRenderingContext2D, shape: ShapeElement): void {
   if (shape.points.length === 0) return;
+  if (shape.renderStyle === "sketch") {
+    context.save(); context.globalAlpha *= 0.3; context.translate(Math.max(0.8, shape.size * 0.35), -Math.max(0.6, shape.size * 0.22));
+    drawShape(context, { ...shape, renderStyle: "clean", size: Math.max(0.7, shape.size * 0.82) }); context.restore();
+  }
   context.save(); context.strokeStyle = visibleInkColor(shape.color); context.lineWidth = shape.size;
   context.lineCap = shape.kind === "ellipse" || shape.kind === "line" || shape.kind === "arrow" ? "round" : "butt";
   context.lineJoin = shape.kind === "ellipse" ? "round" : "miter";
@@ -73,14 +77,18 @@ export function drawText(context: CanvasRenderingContext2D, text: TextElement, f
     sans: "Inter, ui-sans-serif, system-ui, sans-serif",
     serif: "Georgia, Cambria, serif",
     mono: '"SFMono-Regular", Consolas, "Liberation Mono", monospace',
-    handwriting: '"Segoe Print", "Bradley Hand", cursive'
+    handwriting: '"Segoe Print", "Bradley Hand", "Comic Sans MS", "Chalkboard SE", cursive, sans-serif'
   } as const;
   const family = fontFamily ?? families[text.fontFamily ?? "sans"];
-  context.save(); context.fillStyle = visibleInkColor(text.color); context.font = `${text.fontStyle ?? "normal"} ${text.fontWeight ?? 400} ${text.fontSize}px ${family}`;
+  const weight = text.fontWeight ?? (text.blockStyle?.startsWith("heading") ? 700 : 400);
+  if (text.renderStyle === "sketch") { context.save(); context.globalAlpha *= .18; context.translate(.9, -.55); drawText(context, { ...text, renderStyle: "clean" }, family); context.restore(); }
+  context.save(); context.fillStyle = visibleInkColor(text.color); context.font = `${text.fontStyle ?? "normal"} ${weight} ${text.fontSize}px ${family}`;
   context.textBaseline = "alphabetic";
   context.textAlign = text.textAlign ?? "left";
   const lines: string[] = [];
-  for (const paragraph of text.text.split("\n")) {
+  const prefix = text.blockStyle === "bullet" ? "• " : text.blockStyle === "numbered" ? "1. " : text.blockStyle === "check" ? "☐ " : text.blockStyle === "quote" ? "› " : "";
+  const paragraphs = text.text.split("\n").map((paragraph, index) => prefix ? `${text.blockStyle === "numbered" ? `${index + 1}. ` : prefix}${paragraph}`.replace(/^1\. \d+\. /, `${index + 1}. `) : paragraph);
+  for (const paragraph of paragraphs) {
     const words = paragraph.split(/\s+/).filter(Boolean); let line = "";
     for (const word of words) {
       const candidate = line ? `${line} ${word}` : word;
@@ -91,6 +99,11 @@ export function drawText(context: CanvasRenderingContext2D, text: TextElement, f
   }
   const lineHeight = text.fontSize * 1.22;
   const anchorX = text.textAlign === "center" ? text.x + text.width / 2 : text.textAlign === "right" ? text.x + text.width : text.x;
+  if (text.highlightColor) {
+    context.save(); context.globalAlpha = 0.24; context.fillStyle = text.highlightColor;
+    for (const [index, line] of lines.entries()) { const metrics = context.measureText(line); const left = text.textAlign === "center" ? anchorX - metrics.width / 2 : text.textAlign === "right" ? anchorX - metrics.width : anchorX; context.fillRect(left - 4, text.baseline + index * lineHeight - text.fontSize, metrics.width + 8, text.fontSize * 1.18); }
+    context.restore(); context.fillStyle = visibleInkColor(text.color);
+  }
   for (const [index, line] of lines.entries()) context.fillText(line, anchorX, text.baseline + index * lineHeight);
   context.restore();
 }

@@ -1,6 +1,6 @@
 {
   "name": "smooth-whiteboard-webmcp",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "An infinite shared WebMCP whiteboard where humans and browser agents edit the same visual artifact.",
   "main": "main.js",
   "scripts": {

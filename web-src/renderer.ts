@@ -43,6 +43,12 @@ export class BoardRenderer {
     this.camera.y = rect.height / 2 - (bounds.minY + bounds.maxY) / 2 * this.camera.zoom; this.request();
   }
 
+  fitBounds(bounds: { minX: number; minY: number; maxX: number; maxY: number }): void {
+    const rect = this.canvas.getBoundingClientRect(); const width = Math.max(80, bounds.maxX - bounds.minX); const height = Math.max(80, bounds.maxY - bounds.minY);
+    this.camera.zoom = Math.max(.15, Math.min(3, Math.min((rect.width - 220) / width, (rect.height - 220) / height)));
+    this.camera.x = rect.width / 2 - (bounds.minX + bounds.maxX) / 2 * this.camera.zoom; this.camera.y = rect.height / 2 - (bounds.minY + bounds.maxY) / 2 * this.camera.zoom; this.request();
+  }
+
   selectionBounds(): { minX: number; minY: number; maxX: number; maxY: number } | null {
     return boardBounds(this.elements().filter((element) => this.selectionIds.has(element.id)));
   }
@@ -85,28 +91,35 @@ export class BoardRenderer {
       if (this.connectionLabelIds().has(element.id) && element.type === "text") this.drawConnectionLabel(context, element);
       if (element.type === "image") {
         const image = cachedImage(element, () => this.request()); if (image.complete && image.naturalWidth > 0) context.drawImage(image, element.x, element.y, element.width, element.height);
-      } else drawBoardElement(context, element);
-      if (this.activeAgentIds.has(element.id)) this.drawAgentHalo(context, element);
+      } else { context.save(); context.globalAlpha = element.opacity ?? 1; drawBoardElement(context, element); context.restore(); }
     }
+    this.drawAgentContributionHalo(context);
     this.drawInstructionInk(context); this.drawSelection(context); this.drawLasso(context); context.restore();
   }
 
   private drawInstructionInk(context: CanvasRenderingContext2D): void {
-    if (!this.instructionInk.length) return; context.save(); context.strokeStyle = "#2457e6"; context.fillStyle = "#2457e6"; context.lineWidth = 5 / this.camera.zoom; context.lineCap = "round"; context.lineJoin = "round"; context.shadowColor = "rgba(36,87,230,.72)"; context.shadowBlur = 15 / this.camera.zoom;
-    for (const stroke of this.instructionInk) {
-      if (!stroke.length) continue;
-      if (stroke.length === 1) { context.beginPath(); context.arc(stroke[0].x, stroke[0].y, 2.5 / this.camera.zoom, 0, Math.PI * 2); context.fill(); continue; }
-      context.beginPath(); context.moveTo(stroke[0].x, stroke[0].y); for (const point of stroke.slice(1)) context.lineTo(point.x, point.y); context.stroke();
-    }
+    if (!this.instructionInk.length) return; context.save(); context.lineCap = "round"; context.lineJoin = "round";
+    const draw = () => { for (const stroke of this.instructionInk) { if (!stroke.length) continue; context.beginPath(); context.moveTo(stroke[0].x, stroke[0].y); for (const point of stroke.slice(1)) context.lineTo(point.x, point.y); context.stroke(); } };
+    context.strokeStyle = "rgba(158,202,255,.38)"; context.lineWidth = 15 / this.camera.zoom; context.shadowColor = "rgba(133,190,255,.8)"; context.shadowBlur = 26 / this.camera.zoom; draw();
+    context.shadowBlur = 8 / this.camera.zoom; context.strokeStyle = "rgba(255,255,255,.96)"; context.lineWidth = 7 / this.camera.zoom; draw();
+    context.shadowBlur = 0; context.strokeStyle = "#73adff"; context.lineWidth = 2.2 / this.camera.zoom; draw();
     context.restore();
   }
 
   private drawAgentHalo(context: CanvasRenderingContext2D, element: PageElement): void {
     const box = elementBounds(element); const pad = 8 / this.camera.zoom;
-    context.save(); context.strokeStyle = "#e32636"; context.fillStyle = "#e32636"; context.globalAlpha = 0.88; context.lineWidth = 2 / this.camera.zoom;
-    context.shadowColor = "rgba(227,38,54,.78)"; context.shadowBlur = 13 / this.camera.zoom; context.setLineDash([6 / this.camera.zoom, 5 / this.camera.zoom]);
-    context.strokeRect(box.minX - pad, box.minY - pad, box.maxX - box.minX + pad * 2, box.maxY - box.minY + pad * 2); context.setLineDash([]);
-    context.beginPath(); context.arc(box.maxX + pad, box.minY - pad, 4 / this.camera.zoom, 0, Math.PI * 2); context.fill(); context.restore();
+    const x = box.minX - pad; const y = box.minY - pad; const width = box.maxX - box.minX + pad * 2; const height = box.maxY - box.minY + pad * 2;
+    context.save(); context.lineCap = "round"; context.lineJoin = "round"; context.setLineDash([7 / this.camera.zoom, 5 / this.camera.zoom]);
+    context.strokeStyle = "rgba(255,188,196,.44)"; context.lineWidth = 10 / this.camera.zoom; context.shadowColor = "rgba(255,154,166,.78)"; context.shadowBlur = 24 / this.camera.zoom; context.strokeRect(x, y, width, height);
+    context.strokeStyle = "rgba(255,255,255,.96)"; context.lineWidth = 5 / this.camera.zoom; context.shadowBlur = 7 / this.camera.zoom; context.strokeRect(x, y, width, height);
+    context.strokeStyle = "#ff8796"; context.lineWidth = 1.8 / this.camera.zoom; context.shadowBlur = 0; context.strokeRect(x, y, width, height); context.setLineDash([]);
+    context.fillStyle = "#ffffff"; context.beginPath(); context.arc(box.maxX + pad, box.minY - pad, 5 / this.camera.zoom, 0, Math.PI * 2); context.fill(); context.strokeStyle = "#ff8796"; context.stroke(); context.restore();
+  }
+
+  private drawAgentContributionHalo(context: CanvasRenderingContext2D): void {
+    const active = this.elements().filter((element) => this.activeAgentIds.has(element.id)); const box = boardBounds(active); if (!box) return;
+    const proxy: PageElement = { type: "shape", id: "agent-contribution", kind: "rectangle", points: [{ x: box.minX, y: box.minY, pressure: .5 }, { x: box.maxX, y: box.maxY, pressure: .5 }], color: "#ff8796", size: 1, closed: true };
+    this.drawAgentHalo(context, proxy);
   }
 
   private drawConnectionLabel(context: CanvasRenderingContext2D, element: Extract<PageElement, { type: "text" }>): void {

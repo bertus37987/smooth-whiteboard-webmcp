@@ -53,7 +53,7 @@ This split lets the agent create custom drawings through points and strokes with
 ### 0.10 — visual collaboration foundation
 
 - dark, high-contrast pen toolbar with self-contained SVG icons
-- long thin command bar for global and selected context
+- initial global and selected agent context
 - groups, alignment, distribution and duplication
 - structured visual composer and broader WebMCP schema
 - browser and schema regression tests
@@ -66,6 +66,14 @@ This split lets the agent create custom drawings through points and strokes with
 - font roles, weight, italic, alignment, text marking, filled shapes, rounded corners, line styles and bidirectional arrows for WebMCP
 
 ### 0.12 — professional canvas controls
+
+- chatless arrow submit and alternating Human ↔ Agent turns with leases
+- color picker, rich resizable text, notes, tables and feature toggles
+- local, optional English handwriting recognition metadata for agent readability
+- study notes, timelines, comparisons, hierarchies and visual explainers
+- priority regions for AI ink, selection, highlights and recent edits
+
+### 0.13 — export and precision controls
 
 - snapping guides, equal-spacing hints and keyboard nudging
 - stroke-width/fill/opacity inspector
@@ -87,7 +95,7 @@ This split lets the agent create custom drawings through points and strokes with
 - Every WebMCP mutation rejects stale revisions and invalid geometry.
 - Every structured visual decomposes into ordinary editable elements.
 - Moving a grouped node keeps its label; moving a connected node keeps its connector.
-- The command bar works with an empty canvas and with a lasso selection.
+- The submit arrow works with an empty canvas, AI ink and a lasso selection.
 - Agent changes can be accepted, undone or manually edited.
 - Chrome shows every tool icon at normal and high-DPI scaling.
 - The public deployment passes typecheck, tests, build and browser smoke tests.

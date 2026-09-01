@@ -2,6 +2,31 @@ import { PageElement, ShapeElement, TextElement, boundsForElements, elementBound
 import { InkPoint } from "../src/strokes";
 
 export interface Camera { x: number; y: number; zoom: number }
+export interface WhiteboardSettings {
+  inputSmoothing: boolean;
+  pressure: boolean;
+  autoShape: boolean;
+  smartHighlight: boolean;
+  englishHandwritingAssist: boolean;
+}
+export interface PriorityRegion {
+  source: "ai-pen" | "selection" | "highlight" | "recent-edit";
+  bounds: { minX: number; minY: number; maxX: number; maxY: number };
+  elementIds: string[];
+  priority: number;
+}
+export interface CollaborationTurn {
+  id: string;
+  status: "queued" | "claimed" | "planning" | "working" | "complete" | "cancelled";
+  submittedRevision: number;
+  createdAt: string;
+  selectionIds: string[];
+  instructionInk: InkPoint[][];
+  priorityRegions: PriorityRegion[];
+  changedElementIds: string[];
+  planSummary?: string;
+  leaseToken?: string;
+}
 export interface CollaborationRequest {
   id: string;
   instruction: string;
@@ -12,19 +37,25 @@ export interface CollaborationRequest {
   ink?: InkPoint[][];
 }
 export interface WhiteboardDocument {
-  version: 1;
+  version: 2;
   revision: number;
   elements: PageElement[];
   agentElementIds: string[];
-  request: CollaborationRequest | null;
+  request?: CollaborationRequest | null;
+  turn: CollaborationTurn | null;
+  settings: WhiteboardSettings;
+  lastAgentRevision: number;
   connections?: Record<string, { fromId: string; toId: string; labelId?: string }>;
   groups?: Record<string, string[]>;
 }
 
-export type BoardTool = "select" | "hand" | "pen" | "ai-pen" | "rectangle" | "ellipse" | "arrow" | "text" | "image" | "lasso" | "eraser";
+export type BoardTool = "select" | "hand" | "pen" | "ai-pen" | "marker" | "rectangle" | "ellipse" | "arrow" | "text" | "sticky" | "table" | "image" | "lasso" | "eraser";
 
 export type CanvasOperation =
-  | { type: "create_text"; id?: string; x: number; y: number; text: string; fontSize?: number; width?: number; color?: string; fontFamily?: "sans" | "serif" | "mono" | "handwriting"; fontWeight?: 400 | 500 | 600 | 700; fontStyle?: "normal" | "italic"; textAlign?: "left" | "center" | "right" }
+  | { type: "create_text"; id?: string; x: number; y: number; text: string; fontSize?: number; width?: number; color?: string; fontFamily?: "sans" | "serif" | "mono" | "handwriting"; fontWeight?: 400 | 500 | 600 | 700; fontStyle?: "normal" | "italic"; textAlign?: "left" | "center" | "right"; blockStyle?: TextElement["blockStyle"]; highlightColor?: string; renderStyle?: "clean" | "sketch"; semanticRole?: string }
+  | { type: "create_note"; id?: string; x: number; y: number; width?: number; height?: number; text: string; color?: string; fillColor?: string; blockStyle?: TextElement["blockStyle"]; renderStyle?: "clean" | "sketch" }
+  | { type: "create_table"; id?: string; x: number; y: number; width: number; height: number; rows: number; columns: number; headers?: string[]; cells?: string[]; color?: string; fillColor?: string; renderStyle?: "clean" | "sketch" }
+  | { type: "create_frame"; id?: string; x: number; y: number; width: number; height: number; title?: string; color?: string; renderStyle?: "clean" | "sketch" }
   | { type: "create_highlight"; id?: string; x: number; y: number; width: number; size?: number; color?: string; opacity?: number }
   | { type: "highlight_text"; ids: string[]; color?: string; opacity?: number; padding?: number }
   | { type: "create_shape"; id?: string; kind: "rectangle" | "ellipse"; x: number; y: number; width: number; height: number; filled?: boolean; color?: string; strokeWidth?: number; fillColor?: string; fillOpacity?: number; radius?: number; lineStyle?: "solid" | "dashed" | "dotted" }
@@ -35,7 +66,8 @@ export type CanvasOperation =
   | { type: "resize"; id: string; x: number; y: number; width: number; height: number }
   | { type: "update_text"; id: string; text: string }
   | { type: "update_points"; id: string; points: InkPoint[] }
-  | { type: "update_style"; ids: string[]; color?: string; strokeWidth?: number; fillColor?: string; fillOpacity?: number; fontSize?: number; radius?: number; opacity?: number; lineStyle?: "solid" | "dashed" | "dotted"; arrowHeads?: "end" | "start" | "both"; fontFamily?: "sans" | "serif" | "mono" | "handwriting"; fontWeight?: 400 | 500 | 600 | 700; fontStyle?: "normal" | "italic"; textAlign?: "left" | "center" | "right" }
+  | { type: "update_style"; ids: string[]; color?: string; strokeWidth?: number; fillColor?: string; fillOpacity?: number; fontSize?: number; radius?: number; opacity?: number; lineStyle?: "solid" | "dashed" | "dotted"; arrowHeads?: "end" | "start" | "both"; fontFamily?: "sans" | "serif" | "mono" | "handwriting"; fontWeight?: 400 | 500 | 600 | 700; fontStyle?: "normal" | "italic"; textAlign?: "left" | "center" | "right"; blockStyle?: TextElement["blockStyle"]; highlightColor?: string; renderStyle?: "clean" | "sketch" }
+  | { type: "set_locked"; ids: string[]; locked: boolean }
   | { type: "reorder"; ids: string[]; direction: "front" | "back" }
   | { type: "connect"; id?: string; fromId: string; toId: string; label?: string; color?: string; strokeWidth?: number }
   | { type: "align"; ids: string[]; alignment: "left" | "center-x" | "right" | "top" | "center-y" | "bottom" }
@@ -55,7 +87,10 @@ const optionalNumberOf = (value: unknown, choices: readonly number[]): boolean =
 export function isCanvasOperation(value: unknown): value is CanvasOperation {
   if (!value || typeof value !== "object") return false; const operation = value as Record<string, unknown>;
   switch (operation.type) {
-    case "create_text": return finite(operation.x) && finite(operation.y) && typeof operation.text === "string" && optionalFinite(operation.fontSize) && optionalFinite(operation.width) && optionalOneOf(operation.fontFamily, ["sans", "serif", "mono", "handwriting"]) && optionalNumberOf(operation.fontWeight, [400, 500, 600, 700]) && optionalOneOf(operation.fontStyle, ["normal", "italic"]) && optionalOneOf(operation.textAlign, ["left", "center", "right"]);
+    case "create_text": return finite(operation.x) && finite(operation.y) && typeof operation.text === "string" && optionalFinite(operation.fontSize) && optionalFinite(operation.width) && optionalOneOf(operation.fontFamily, ["sans", "serif", "mono", "handwriting"]) && optionalNumberOf(operation.fontWeight, [400, 500, 600, 700]) && optionalOneOf(operation.fontStyle, ["normal", "italic"]) && optionalOneOf(operation.textAlign, ["left", "center", "right"]) && optionalOneOf(operation.renderStyle, ["clean", "sketch"]);
+    case "create_note": return finite(operation.x) && finite(operation.y) && typeof operation.text === "string" && optionalFinite(operation.width) && optionalFinite(operation.height) && optionalOneOf(operation.renderStyle, ["clean", "sketch"]);
+    case "create_table": return finite(operation.x) && finite(operation.y) && finite(operation.width) && finite(operation.height) && finite(operation.rows) && finite(operation.columns) && operation.rows >= 1 && operation.rows <= 20 && operation.columns >= 1 && operation.columns <= 12;
+    case "create_frame": return finite(operation.x) && finite(operation.y) && finite(operation.width) && finite(operation.height) && optionalOneOf(operation.renderStyle, ["clean", "sketch"]);
     case "create_highlight": return finite(operation.x) && finite(operation.y) && finite(operation.width) && optionalFinite(operation.size) && optionalFinite(operation.opacity);
     case "highlight_text": return ids(operation.ids) && optionalFinite(operation.opacity) && optionalFinite(operation.padding);
     case "create_shape": return (operation.kind === "rectangle" || operation.kind === "ellipse") && finite(operation.x) && finite(operation.y) && finite(operation.width) && finite(operation.height) && optionalFinite(operation.radius) && optionalFinite(operation.strokeWidth) && optionalFinite(operation.fillOpacity) && optionalOneOf(operation.lineStyle, ["solid", "dashed", "dotted"]);
@@ -67,6 +102,7 @@ export function isCanvasOperation(value: unknown): value is CanvasOperation {
     case "update_text": return typeof operation.id === "string" && typeof operation.text === "string";
     case "update_points": return typeof operation.id === "string" && Array.isArray(operation.points) && operation.points.length > 1 && operation.points.every(position);
     case "update_style": return ids(operation.ids) && optionalFinite(operation.strokeWidth) && optionalFinite(operation.fillOpacity) && optionalFinite(operation.fontSize) && optionalFinite(operation.radius) && optionalFinite(operation.opacity) && optionalOneOf(operation.lineStyle, ["solid", "dashed", "dotted"]) && optionalOneOf(operation.arrowHeads, ["end", "start", "both"]) && optionalOneOf(operation.fontFamily, ["sans", "serif", "mono", "handwriting"]) && optionalNumberOf(operation.fontWeight, [400, 500, 600, 700]) && optionalOneOf(operation.fontStyle, ["normal", "italic"]) && optionalOneOf(operation.textAlign, ["left", "center", "right"]);
+    case "set_locked": return ids(operation.ids) && typeof operation.locked === "boolean";
     case "reorder": return ids(operation.ids) && (operation.direction === "front" || operation.direction === "back");
     case "connect": return typeof operation.fromId === "string" && typeof operation.toId === "string";
     case "align": return ids(operation.ids) && ["left", "center-x", "right", "top", "center-y", "bottom"].includes(String(operation.alignment));
@@ -79,14 +115,32 @@ export function isCanvasOperation(value: unknown): value is CanvasOperation {
   }
 }
 
-export const emptyBoard = (): WhiteboardDocument => ({ version: 1, revision: 0, elements: [], agentElementIds: [], request: null, connections: {}, groups: {} });
+export const defaultSettings = (): WhiteboardSettings => ({ inputSmoothing: true, pressure: true, autoShape: false, smartHighlight: true, englishHandwritingAssist: true });
+export const emptyBoard = (): WhiteboardDocument => ({ version: 2, revision: 0, elements: [], agentElementIds: [], request: null, turn: null, settings: defaultSettings(), lastAgentRevision: 0, connections: {}, groups: {} });
 
 export function cloneBoard(document: WhiteboardDocument): WhiteboardDocument { return structuredClone(document); }
 
 export function validBoard(value: unknown): value is WhiteboardDocument {
   if (!value || typeof value !== "object") return false;
   const candidate = value as Partial<WhiteboardDocument>;
-  return candidate.version === 1 && typeof candidate.revision === "number" && Array.isArray(candidate.elements) && Array.isArray(candidate.agentElementIds);
+  return candidate.version === 2 && typeof candidate.revision === "number" && Array.isArray(candidate.elements) && Array.isArray(candidate.agentElementIds) && Boolean(candidate.settings);
+}
+
+export function migrateBoard(value: unknown): WhiteboardDocument | null {
+  if (validBoard(value)) return cloneBoard(value);
+  if (!value || typeof value !== "object") return null; const legacy = value as {
+    version?: number;
+    revision?: number;
+    elements?: PageElement[];
+    agentElementIds?: string[];
+    request?: CollaborationRequest | null;
+    connections?: WhiteboardDocument["connections"];
+    groups?: WhiteboardDocument["groups"];
+  };
+  if (legacy.version !== 1 || typeof legacy.revision !== "number" || !Array.isArray(legacy.elements) || !Array.isArray(legacy.agentElementIds)) return null;
+  const request = legacy.request ?? null;
+  const turn: CollaborationTurn | null = request && request.state !== "answered" ? { id: request.id, status: request.state === "working" ? "working" : "queued", submittedRevision: legacy.revision, createdAt: request.createdAt, selectionIds: request.selectionIds, instructionInk: request.ink ?? [], priorityRegions: [], changedElementIds: [] } : null;
+  return { version: 2, revision: legacy.revision, elements: structuredClone(legacy.elements), agentElementIds: [...legacy.agentElementIds], request: null, turn, settings: defaultSettings(), lastAgentRevision: 0, connections: structuredClone(legacy.connections ?? {}), groups: structuredClone(legacy.groups ?? {}) };
 }
 
 export function boardBounds(elements: PageElement[]): { minX: number; minY: number; maxX: number; maxY: number } | null {
@@ -128,7 +182,7 @@ export function operationElement(operation: Extract<CanvasOperation, { type: "cr
   if (operation.type === "create_text") {
     const fontSize = Math.max(12, Math.min(160, operation.fontSize ?? 32));
     const width = operation.width ?? Math.max(80, Math.min(520, operation.text.length * fontSize * 0.58));
-    return { type: "text", id: operation.id ?? id("text"), x: operation.x, baseline: operation.y + fontSize, width, height: estimateTextHeight(operation.text, width, fontSize), fontSize, color: operation.color ?? "#000000", text: operation.text, fontFamily: operation.fontFamily, fontWeight: operation.fontWeight, fontStyle: operation.fontStyle, textAlign: operation.textAlign } satisfies TextElement;
+    return { type: "text", id: operation.id ?? id("text"), x: operation.x, baseline: operation.y + fontSize, width, height: estimateTextHeight(operation.text, width, fontSize), fontSize, color: operation.color ?? "#000000", text: operation.text, fontFamily: operation.fontFamily, fontWeight: operation.fontWeight, fontStyle: operation.fontStyle, textAlign: operation.textAlign, blockStyle: operation.blockStyle, highlightColor: operation.highlightColor, renderStyle: operation.renderStyle, semanticRole: operation.semanticRole } satisfies TextElement;
   }
   if (operation.type === "create_highlight") return { type: "highlight", id: operation.id ?? id("highlight"), x1: operation.x, x2: operation.x + operation.width, y: operation.y, size: operation.size ?? 28, color: operation.color ?? "#ffd84d", opacity: operation.opacity ?? 0.28 };
   if (operation.type === "create_arrow") return { type: "shape", id: operation.id ?? id("arrow"), kind: "arrow", points: [{ ...operation.from, pressure: 0.5 }, { ...operation.to, pressure: 0.5 }], color: operation.color ?? "#000000", size: operation.strokeWidth ?? 3, closed: false, startArrow: operation.arrowHeads === "start" || operation.arrowHeads === "both", endArrow: operation.arrowHeads !== "start", lineStyle: operation.lineStyle } satisfies ShapeElement;
@@ -144,11 +198,11 @@ export function estimateTextHeight(text: string, width: number, fontSize: number
 }
 
 export function elementSummary(element: PageElement): Record<string, unknown> {
-  const bounds = elementBounds(element); const base = { id: element.id, type: element.type, bounds };
-  if (element.type === "text") return { ...base, text: element.text, fontSize: element.fontSize, color: element.color, width: element.width, height: element.height, fontFamily: element.fontFamily ?? "sans", fontWeight: element.fontWeight ?? 400, fontStyle: element.fontStyle ?? "normal", textAlign: element.textAlign ?? "left" };
+  const bounds = elementBounds(element); const base = { id: element.id, type: element.type, bounds, locked: element.locked ?? false, semanticRole: element.semanticRole ?? null, renderStyle: element.renderStyle ?? "clean", opacity: element.opacity ?? 1 };
+  if (element.type === "text") return { ...base, text: element.text, fontSize: element.fontSize, color: element.color, width: element.width, height: element.height, fontFamily: element.fontFamily ?? "sans", fontWeight: element.fontWeight ?? 400, fontStyle: element.fontStyle ?? "normal", textAlign: element.textAlign ?? "left", blockStyle: element.blockStyle ?? "body", highlightColor: element.highlightColor ?? null };
   if (element.type === "shape") return { ...base, kind: element.kind, points: element.points, color: element.color, strokeWidth: element.size, fillColor: element.fillColor, fillOpacity: element.fillOpacity ?? 0, radius: element.radius ?? 0, lineStyle: element.lineStyle ?? "solid", arrowHeads: element.startArrow ? (element.endArrow === false ? "start" : "both") : "end" };
   if (element.type === "highlight") return { ...base, x1: element.x1, x2: element.x2, y: element.y, size: element.size, color: element.color, opacity: element.opacity };
-  if (element.type === "stroke") return { ...base, points: element.points, color: element.color, strokeWidth: element.size };
+  if (element.type === "stroke") return { ...base, points: element.points, color: element.color, strokeWidth: element.size, recognitionText: element.recognitionText ?? null };
   if (element.type === "image") return { ...base, sourceName: element.sourceName ?? "image" };
   return base;
 }

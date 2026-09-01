@@ -1,7 +1,8 @@
 import { PageElement } from "../src/document";
-import { CanvasOperation, WhiteboardDocument, boardBounds, cloneBoard, connectionPoints, emptyBoard, estimateTextHeight, operationElement, scaleElement, translateElement, validBoard } from "./model";
+import { CanvasOperation, WhiteboardDocument, boardBounds, cloneBoard, connectionPoints, emptyBoard, estimateTextHeight, migrateBoard, operationElement, scaleElement, translateElement } from "./model";
 
-const STORAGE_KEY = "smooth-whiteboard-v1";
+const STORAGE_KEY = "smooth-whiteboard-v2";
+const LEGACY_STORAGE_KEY = "smooth-whiteboard-v1";
 
 export class BoardStore extends EventTarget {
   document: WhiteboardDocument;
@@ -11,7 +12,7 @@ export class BoardStore extends EventTarget {
 
   constructor() {
     super();
-    try { const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "null") as unknown; this.document = validBoard(parsed) ? parsed : emptyBoard(); }
+    try { const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem(LEGACY_STORAGE_KEY) ?? "null") as unknown; this.document = migrateBoard(parsed) ?? emptyBoard(); }
     catch { this.document = emptyBoard(); }
     this.document.connections ??= {}; this.document.groups ??= {}; this.refreshConnections(); this.cleanGroups();
   }
@@ -36,15 +37,15 @@ export class BoardStore extends EventTarget {
 
   beginAgentContribution(): void {
     if (!this.agentBefore) this.agentBefore = cloneBoard(this.document);
-    if (this.document.request) this.document.request.state = "working";
+    if (this.document.turn) this.document.turn.status = "working";
   }
 
   acceptAgentContribution(): void {
-    this.agentBefore = null; if (this.document.request) { this.document.request.state = "answered"; this.document.request.ink = []; } this.changed();
+    this.agentBefore = null; if (this.document.turn) { this.document.turn.status = "complete"; this.document.turn.instructionInk = []; } this.document.lastAgentRevision = this.document.revision; this.changed();
   }
 
   undoAgentContribution(): boolean {
-    if (!this.agentBefore) return false; this.document = this.agentBefore; this.agentBefore = null; if (this.document.request) { this.document.request.state = "answered"; this.document.request.ink = []; } this.changed(); return true;
+    if (!this.agentBefore) return false; this.document = this.agentBefore; this.agentBefore = null; if (this.document.turn) { this.document.turn.status = "cancelled"; this.document.turn.instructionInk = []; } this.changed(); return true;
   }
 
   hasAgentContribution(): boolean { return this.agentBefore !== null; }
@@ -73,9 +74,23 @@ export class BoardStore extends EventTarget {
   applyOperation(operation: CanvasOperation, source: "human" | "agent"): string[] {
     const created: string[] = [];
     if (operation.type === "create_text" || operation.type === "create_highlight" || operation.type === "create_shape" || operation.type === "create_arrow" || operation.type === "create_stroke" || operation.type === "create_polygon") {
-      const element = operationElement(operation);
+      const normalized = operation.type === "create_text" && source === "agent" ? { ...operation, fontFamily: operation.fontFamily ?? "handwriting", renderStyle: operation.renderStyle ?? "sketch" as const } : operation;
+      const element = operationElement(normalized);
       this.document.elements.push(element); created.push(element.id);
       if (source === "agent" && !this.document.agentElementIds.includes(element.id)) this.document.agentElementIds.push(element.id);
+    } else if (operation.type === "create_note") {
+      const prefix = operation.id ?? `note-${crypto.randomUUID()}`; const width = Math.max(120, operation.width ?? 320); const height = Math.max(90, operation.height ?? 210);
+      const shape = operationElement({ type: "create_shape", id: `${prefix}-card`, kind: "rectangle", x: operation.x, y: operation.y, width, height, color: operation.color ?? "#080808", strokeWidth: 2, fillColor: operation.fillColor ?? "#fff4b8", fillOpacity: 0.72, radius: 18 }); shape.renderStyle = operation.renderStyle ?? (source === "agent" ? "sketch" : "clean"); shape.semanticRole = "note";
+      const text = operationElement({ type: "create_text", id: `${prefix}-text`, x: operation.x + 18, y: operation.y + 18, width: width - 36, text: operation.text, fontSize: 24, color: operation.color ?? "#080808", fontFamily: source === "agent" ? "handwriting" : "sans", blockStyle: operation.blockStyle ?? "body", renderStyle: operation.renderStyle, semanticRole: "note-body" });
+      this.document.elements.push(shape, text); created.push(shape.id, text.id); (this.document.groups ??= {})[prefix] = [shape.id, text.id]; if (source === "agent") this.document.agentElementIds.push(shape.id, text.id);
+    } else if (operation.type === "create_frame") {
+      const prefix = operation.id ?? `frame-${crypto.randomUUID()}`; const shape = operationElement({ type: "create_shape", id: `${prefix}-border`, kind: "rectangle", x: operation.x, y: operation.y, width: operation.width, height: operation.height, color: operation.color ?? "#404040", strokeWidth: 2, fillColor: "#ffffff", fillOpacity: 0.04, radius: 24, lineStyle: "dashed" }); shape.renderStyle = operation.renderStyle; shape.semanticRole = "frame"; this.document.elements.push(shape); created.push(shape.id);
+      if (operation.title) { const label = operationElement({ type: "create_text", id: `${prefix}-title`, x: operation.x + 18, y: operation.y + 12, width: operation.width - 36, text: operation.title, fontSize: 28, color: operation.color ?? "#080808", fontFamily: source === "agent" ? "handwriting" : "sans", fontWeight: 700, blockStyle: "heading-2", semanticRole: "frame-title" }); this.document.elements.push(label); created.push(label.id); }
+      (this.document.groups ??= {})[prefix] = [...created]; if (source === "agent") this.document.agentElementIds.push(...created);
+    } else if (operation.type === "create_table") {
+      const prefix = operation.id ?? `table-${crypto.randomUUID()}`; const rows = Math.max(1, Math.min(20, Math.round(operation.rows))); const columns = Math.max(1, Math.min(12, Math.round(operation.columns))); const cellWidth = operation.width / columns; const cellHeight = operation.height / rows;
+      for (let row = 0; row < rows; row += 1) for (let column = 0; column < columns; column += 1) { const index = row * columns + column; const cell = operationElement({ type: "create_shape", id: `${prefix}-cell-${row}-${column}`, kind: "rectangle", x: operation.x + column * cellWidth, y: operation.y + row * cellHeight, width: cellWidth, height: cellHeight, color: operation.color ?? "#080808", strokeWidth: 1.5, fillColor: row === 0 && operation.headers?.length ? (operation.fillColor ?? "#e9e9e9") : "#ffffff", fillOpacity: row === 0 && operation.headers?.length ? 0.7 : 0, radius: 0 }); cell.renderStyle = operation.renderStyle; cell.semanticRole = "table-cell"; this.document.elements.push(cell); created.push(cell.id); const value = row === 0 && operation.headers?.[column] ? operation.headers[column] : operation.cells?.[index]; if (value) { const label = operationElement({ type: "create_text", id: `${prefix}-text-${row}-${column}`, x: operation.x + column * cellWidth + 8, y: operation.y + row * cellHeight + 8, width: cellWidth - 16, text: value, fontSize: Math.min(22, cellHeight * 0.42), fontFamily: source === "agent" ? "handwriting" : "sans", fontWeight: row === 0 ? 700 : 400, blockStyle: row === 0 ? "heading-3" : "body", semanticRole: "table-text" }); this.document.elements.push(label); created.push(label.id); } }
+      (this.document.groups ??= {})[prefix] = [...created]; if (source === "agent") this.document.agentElementIds.push(...created);
     } else if (operation.type === "highlight_text") {
       const wanted = new Set(this.expandGroupIds(operation.ids));
       for (const text of this.document.elements.filter((element): element is Extract<PageElement, { type: "text" }> => element.type === "text" && wanted.has(element.id))) {
@@ -96,6 +111,8 @@ export class BoardStore extends EventTarget {
     } else if (operation.type === "update_style") {
       const expanded = this.expandGroupIds(operation.ids); for (const element of this.elementsFor(expanded)) {
         if (operation.color && "color" in element) element.color = operation.color;
+        if (operation.opacity !== undefined) element.opacity = Math.max(0, Math.min(1, operation.opacity));
+        if (operation.renderStyle) element.renderStyle = operation.renderStyle;
         if (element.type === "highlight" && operation.opacity !== undefined) element.opacity = Math.max(0, Math.min(1, operation.opacity));
         if (element.type === "stroke" || element.type === "shape") {
           if (operation.strokeWidth !== undefined) element.size = Math.max(0.5, Math.min(32, operation.strokeWidth));
@@ -106,10 +123,12 @@ export class BoardStore extends EventTarget {
           }
         } else if (element.type === "text") {
           if (operation.fontSize !== undefined) element.fontSize = Math.max(10, Math.min(180, operation.fontSize));
-          if (operation.fontFamily) element.fontFamily = operation.fontFamily; if (operation.fontWeight) element.fontWeight = operation.fontWeight; if (operation.fontStyle) element.fontStyle = operation.fontStyle; if (operation.textAlign) element.textAlign = operation.textAlign;
+          if (operation.fontFamily) element.fontFamily = operation.fontFamily; if (operation.fontWeight) element.fontWeight = operation.fontWeight; if (operation.fontStyle) element.fontStyle = operation.fontStyle; if (operation.textAlign) element.textAlign = operation.textAlign; if (operation.blockStyle) element.blockStyle = operation.blockStyle; if (operation.highlightColor !== undefined) element.highlightColor = operation.highlightColor || undefined;
           element.height = estimateTextHeight(element.text, element.width, element.fontSize);
         }
       }
+    } else if (operation.type === "set_locked") {
+      const expanded = this.expandGroupIds(operation.ids); this.elementsFor(expanded).forEach((element) => { element.locked = operation.locked; });
     } else if (operation.type === "reorder") {
       const expanded = this.expandGroupIds(operation.ids); const selected = this.elementsFor(expanded); const rest = this.document.elements.filter((element) => !expanded.includes(element.id));
       this.document.elements = operation.direction === "front" ? [...rest, ...selected] : [...selected, ...rest];
@@ -121,7 +140,7 @@ export class BoardStore extends EventTarget {
         const connection = { fromId: from.id, toId: to.id, labelId: undefined as string | undefined };
         if (operation.label) {
           const fontSize = 16; const width = Math.max(96, Math.min(260, operation.label.length * 8.5 + 20));
-          const label = operationElement({ type: "create_text", x: (points.from.x + points.to.x) / 2 - width / 2, y: (points.from.y + points.to.y) / 2 - fontSize / 2, width, fontSize, text: operation.label });
+          const label = operationElement({ type: "create_text", x: (points.from.x + points.to.x) / 2 - width / 2, y: (points.from.y + points.to.y) / 2 - fontSize / 2, width, fontSize, text: operation.label, fontFamily: source === "agent" ? "handwriting" : "sans" });
           this.document.elements.push(label); created.push(label.id); if (source === "agent") this.document.agentElementIds.push(label.id);
           connection.labelId = label.id;
         }

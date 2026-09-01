@@ -1,6 +1,6 @@
 import { CanvasOperation } from "./model";
 
-export type VisualKind = "flowchart" | "mindmap" | "ui_wireframe" | "research_report" | "math_steps" | "plot";
+export type VisualKind = "flowchart" | "mindmap" | "ui_wireframe" | "research_report" | "math_steps" | "plot" | "study_note" | "timeline" | "comparison" | "hierarchy" | "visual_explainer";
 
 export interface VisualNodeInput {
   id: string;
@@ -41,7 +41,7 @@ const cleanId = (value: string): string => value.trim().replace(/[^a-zA-Z0-9_-]+
 
 export function isVisualComposition(value: unknown): value is VisualCompositionInput {
   if (!value || typeof value !== "object") return false; const input = value as Record<string, unknown>;
-  if (!["flowchart", "mindmap", "ui_wireframe", "research_report", "math_steps", "plot"].includes(String(input.kind))) return false;
+  if (!["flowchart", "mindmap", "ui_wireframe", "research_report", "math_steps", "plot", "study_note", "timeline", "comparison", "hierarchy", "visual_explainer"].includes(String(input.kind))) return false;
   if (![input.x, input.y, input.width, input.height].every(optionalFinite)) return false;
   if (input.nodes !== undefined && (!Array.isArray(input.nodes) || input.nodes.length > 40 || input.nodes.some((node) => !node || typeof node !== "object" || typeof node.id !== "string" || typeof node.label !== "string" || !optionalFinite(node.x) || !optionalFinite(node.y) || !optionalFinite(node.width) || !optionalFinite(node.height)))) return false;
   if (input.edges !== undefined && (!Array.isArray(input.edges) || input.edges.length > 80 || input.edges.some((edge) => !edge || typeof edge !== "object" || typeof edge.fromId !== "string" || typeof edge.toId !== "string"))) return false;
@@ -66,7 +66,7 @@ function cardOperations(prefix: string, node: VisualNodeInput, x: number, y: num
 }
 
 function titleOperations(prefix: string, title: string | undefined, x: number, y: number, width: number): CanvasOperation[] {
-  return title ? [{ type: "create_text", id: `${prefix}-title`, x, y, width, fontSize: 34, color: "#080808", text: title }] : [];
+  return title ? [{ type: "create_text", id: `${prefix}-title`, x, y, width, fontSize: 34, color: "#080808", text: title, fontWeight: 700, blockStyle: "heading-1", renderStyle: "sketch" }] : [];
 }
 
 function flowchart(input: VisualCompositionInput, prefix: string): CanvasOperation[] {
@@ -127,6 +127,31 @@ function plot(input: VisualCompositionInput, prefix: string): CanvasOperation[] 
   operations.push({ type: "reorder", ids: [`${prefix}-plot-frame`], direction: "back" }); return operations;
 }
 
+function studyNote(input: VisualCompositionInput, prefix: string): CanvasOperation[] {
+  const x = input.x ?? -470; const y = input.y ?? -320; const width = input.width ?? 940; const sections = input.sections ?? [];
+  const operations: CanvasOperation[] = [{ type: "create_frame", id: `${prefix}-page`, x, y, width, height: input.height ?? Math.max(620, 150 + sections.length * 145), title: input.title ?? "Study notes", renderStyle: "sketch" }];
+  sections.forEach((section, index) => { const py = y + 88 + index * 142; operations.push({ type: "create_text", id: `${prefix}-heading-${index}`, x: x + 28, y: py, width: width - 56, text: section.heading, fontSize: 27, fontWeight: 700, blockStyle: "heading-2", highlightColor: index === 0 ? "#ffd84d" : undefined, renderStyle: "sketch" }, { type: "create_text", id: `${prefix}-body-${index}`, x: x + 42, y: py + 45, width: width - 84, text: section.body, fontSize: 21, blockStyle: "bullet", renderStyle: "sketch" }); });
+  return operations;
+}
+
+function timeline(input: VisualCompositionInput, prefix: string): CanvasOperation[] {
+  const nodes = input.nodes ?? []; const x = input.x ?? -480; const y = input.y ?? -100; const width = input.width ?? 960; const gap = width / Math.max(1, nodes.length - 1); const operations = titleOperations(prefix, input.title ?? "Timeline", x, y - 130, width);
+  if (nodes.length > 1) operations.push({ type: "create_arrow", id: `${prefix}-axis`, from: { x, y }, to: { x: x + width, y }, color: "#404040", strokeWidth: 3 });
+  nodes.forEach((node, index) => { const px = x + gap * index; operations.push({ type: "create_shape", id: `${prefix}-dot-${index}`, kind: "ellipse", x: px - 8, y: y - 8, width: 16, height: 16, color: "#080808", filled: true, fillColor: "#080808", fillOpacity: 1 }, { type: "create_note", id: `${prefix}-event-${index}`, x: px - 105, y: y + (index % 2 ? 44 : -180), width: 210, height: 112, text: node.detail ? `${node.label}\n${node.detail}` : node.label, fillColor: "#ffffff", renderStyle: "sketch" }); }); return operations;
+}
+
+function comparison(input: VisualCompositionInput, prefix: string): CanvasOperation[] {
+  const sections = input.sections ?? []; const x = input.x ?? -460; const y = input.y ?? -300; const width = input.width ?? 920; const columns = Math.max(2, Math.min(4, sections.length || 2)); const operations = titleOperations(prefix, input.title ?? "Comparison", x, y, width); const columnWidth = (width - 24 * (columns - 1)) / columns;
+  sections.forEach((section, index) => operations.push({ type: "create_note", id: `${prefix}-column-${index}`, x: x + index * (columnWidth + 24), y: y + 72, width: columnWidth, height: input.height ?? 460, text: `${section.heading}\n${section.body}`, blockStyle: "bullet", fillColor: index % 2 ? "#f3f3f3" : "#ffffff", renderStyle: "sketch" })); return operations;
+}
+
+function visualExplainer(input: VisualCompositionInput, prefix: string): CanvasOperation[] {
+  const nodes = input.nodes ?? []; const x = input.x ?? -450; const y = input.y ?? -300; const width = input.width ?? 900; const operations: CanvasOperation[] = [{ type: "create_frame", id: `${prefix}-frame`, x, y, width, height: input.height ?? 620, title: input.title ?? "Visual explanation", renderStyle: "sketch" }];
+  const columns = Math.min(3, Math.max(1, Math.ceil(Math.sqrt(nodes.length || 1)))); const cardWidth = (width - 70 - (columns - 1) * 28) / columns;
+  nodes.forEach((node, index) => { const px = x + 28 + (index % columns) * (cardWidth + 28); const py = y + 90 + Math.floor(index / columns) * 190; operations.push({ type: "create_note", id: `${prefix}-idea-${index}`, x: px, y: py, width: cardWidth, height: 145, text: node.detail ? `${node.label}\n${node.detail}` : node.label, fillColor: index === 0 ? "#fff4b8" : "#ffffff", renderStyle: "sketch" }); });
+  return operations;
+}
+
 export function composeVisual(input: VisualCompositionInput): CanvasOperation[] {
   const prefix = cleanId(input.id ?? `visual-${crypto.randomUUID()}`);
   if (input.kind === "flowchart") return flowchart(input, prefix);
@@ -134,5 +159,14 @@ export function composeVisual(input: VisualCompositionInput): CanvasOperation[] 
   if (input.kind === "ui_wireframe") return uiWireframe(input, prefix);
   if (input.kind === "research_report") return researchReport(input, prefix);
   if (input.kind === "math_steps") return mathSteps(input, prefix);
+  if (input.kind === "study_note") return studyNote(input, prefix);
+  if (input.kind === "timeline") return timeline(input, prefix);
+  if (input.kind === "comparison") return comparison(input, prefix);
+  if (input.kind === "hierarchy") {
+    const sourceNodes = input.nodes ?? [];
+    const nodes = sourceNodes.map((node, index) => ({ ...node, parentId: node.parentId ?? (index > 0 ? sourceNodes[Math.floor((index - 1) / 2)]?.id : undefined) }));
+    return flowchart({ ...input, kind: "flowchart", nodes }, prefix);
+  }
+  if (input.kind === "visual_explainer") return visualExplainer(input, prefix);
   return plot(input, prefix);
 }

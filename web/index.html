@@ -6,15 +6,16 @@
   <meta name="theme-color" content="#ffffff">
   <meta name="description" content="Ein gemeinsames, unendliches Whiteboard für Mensch und Browser-Agent.">
   <title>Shared Whiteboard</title>
-  <link rel="stylesheet" href="./app.css?v=0.11.0">
+  <link rel="stylesheet" href="./app.css?v=0.12.0">
 </head>
 <body>
   <main class="workspace" aria-label="Gemeinsames unendliches Whiteboard">
-    <canvas id="board" data-tool="select" aria-label="Unendliche Zeichenfläche"></canvas>
+    <canvas id="board" data-active-tool="pen" aria-label="Unendliche Zeichenfläche"></canvas>
     <nav class="toolbar" aria-label="Whiteboard-Werkzeuge">
       <div class="tool-group">
         <button type="button" data-tool="pen" aria-label="Freihand" title="Freihand · P"></button>
         <button type="button" data-tool="ai-pen" aria-label="AI Pen" title="AI Pen · I"></button>
+        <button type="button" data-tool="marker" aria-label="Marker" title="Marker · M"></button>
         <button type="button" data-tool="eraser" aria-label="Radierer" title="Radierer · E"></button>
         <button type="button" data-tool="select" aria-label="Auswählen" title="Auswählen · V"></button>
         <button type="button" data-tool="hand" aria-label="Verschieben" title="Verschieben · H"></button>
@@ -22,6 +23,8 @@
         <button type="button" data-tool="ellipse" aria-label="Ellipse" title="Ellipse · O"></button>
         <button type="button" data-tool="arrow" aria-label="Pfeil" title="Pfeil · A"></button>
         <button type="button" data-tool="text" aria-label="Text" title="Text · T"></button>
+        <button type="button" data-tool="sticky" aria-label="Notizzettel" title="Notizzettel · N"></button>
+        <button type="button" data-tool="table" aria-label="Tabelle" title="Tabelle"></button>
         <button type="button" id="image-tool" data-tool="image" aria-label="Bild" title="Bild"></button>
         <button type="button" data-tool="lasso" aria-label="Lasso" title="Lasso · L"></button>
       </div>
@@ -31,6 +34,7 @@
         <button type="button" data-color="#c62828" class="color" aria-label="Rot" title="Rot"></button>
         <button type="button" data-color="#16833b" class="color" aria-label="Grün" title="Grün"></button>
         <button type="button" data-color="#7c3aed" class="color" aria-label="Violett" title="Violett"></button>
+        <button type="button" id="color-picker-toggle" class="color-picker-toggle" aria-label="Eigene Farbe" title="Eigene Farbe"><span></span></button>
       </div>
       <div class="tool-group history">
         <button type="button" id="undo" aria-label="Rückgängig" title="Rückgängig"></button>
@@ -44,16 +48,27 @@
       <span id="revision">r0</span>
       <button type="button" id="export-json">Export</button>
       <label class="file-label">Import<input id="import-json" type="file" accept="application/json"></label>
+      <button type="button" id="settings-toggle" aria-label="Einstellungen" title="Einstellungen"></button>
       <button type="button" id="clear" aria-label="Whiteboard leeren" title="Whiteboard leeren"></button>
     </section>
 
-    <section id="agent-bar" class="agent-bar" aria-label="Anweisung an den Canvas-Agenten">
-      <form id="agent-form">
-        <label id="request-scope" for="instruction">Canvas</label>
-        <input id="instruction" name="instruction" type="text" autocomplete="off" aria-label="Anweisung an den Canvas-Agenten">
-        <button type="submit" id="send" aria-label="An Agent senden" title="An Agent senden"></button>
-        <button type="button" id="clear-context" aria-label="Auswahlkontext entfernen" title="Auswahlkontext entfernen" hidden></button>
-      </form>
+    <section class="submit-dock" aria-label="Whiteboard an den Agenten übergeben">
+      <span id="request-scope">Gesamte Notiz</span>
+      <button type="button" id="submit-turn" aria-label="Notiz an Agent senden" title="An Agent senden · Strg+Enter"></button>
+    </section>
+    <section id="color-popover" class="popover color-popover" hidden>
+      <label>Farbe <input id="color-native" type="color" value="#080808"></label>
+      <label>Hex <input id="color-hex" type="text" value="#080808" maxlength="7" spellcheck="false"></label>
+      <label>Deckkraft <input id="color-opacity" type="range" min="10" max="100" value="100"></label>
+    </section>
+    <section id="settings-popover" class="popover settings-popover" hidden>
+      <h2>Schreibwerkzeuge</h2>
+      <label><input id="setting-smoothing" type="checkbox"> Sanfte Eingabeglättung</label>
+      <label><input id="setting-pressure" type="checkbox"> Stiftdruck</label>
+      <label><input id="setting-auto-shape" type="checkbox"> Formen verbessern</label>
+      <label><input id="setting-smart-highlight" type="checkbox"> Marker an Inhalt ausrichten</label>
+      <label><input id="setting-english-assist" type="checkbox"> Englische Handschrift für Agent lesbar machen</label>
+      <p id="handwriting-support">Lokal im Browser, ohne sichtbaren Textaustausch.</p>
     </section>
     <section id="selection-tools" class="selection-tools" aria-label="Auswahl bearbeiten" hidden>
       <button type="button" id="duplicate" aria-label="Auswahl duplizieren" title="Duplizieren"></button>
@@ -75,6 +90,6 @@
     <div id="agent-marker-tip" class="agent-marker-tip" role="tooltip" hidden><span></span>Agenten-Markierung · neuer Beitrag</div>
     <input id="image-input" type="file" accept="image/png,image/jpeg" hidden>
   </main>
-  <script type="module" src="./app.js?v=0.11.0"></script>
+  <script type="module" src="./app.js?v=0.12.0"></script>
 </body>
 </html>

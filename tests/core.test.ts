@@ -5,7 +5,7 @@ import { normalizeHandwritingWord } from "../src/handwriting-normalizer";
 import { draggedShapePoints, optimizeShape, shapeContainsPoint } from "../src/shapes";
 import { snapHighlightToWords, wordBoxes } from "../src/smart-highlight";
 import { InkPoint, InkStroke, beautifyStroke, modelCapturedStroke, pressureWidth, visibleInkColor } from "../src/strokes";
-import { connectionPoints, estimateTextHeight, isCanvasOperation, lassoElements, operationElement, scaleElement, translateElement } from "../web-src/model";
+import { connectionPoints, estimateTextHeight, isCanvasOperation, lassoElements, migrateBoard, operationElement, scaleElement, translateElement } from "../web-src/model";
 import { BoardStore } from "../web-src/store";
 import { composeVisual, isVisualComposition } from "../web-src/compositions";
 import { registerWhiteboardTools } from "../web-src/webmcp";
@@ -84,10 +84,13 @@ Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
   setItem: (key: string, value: string) => storedBoards.set(key, value)
 } });
 const connectedStore = new BoardStore();
-connectedStore.document.request = { id: "ink-request", instruction: "Dort ergänzen", selectionIds: [], createdAt: new Date(0).toISOString(), state: "ready", ink: [[point(10, 10), point(40, 40)]] };
+connectedStore.document.turn = { id: "ink-turn", status: "queued", submittedRevision: 0, selectionIds: [], createdAt: new Date(0).toISOString(), instructionInk: [[point(10, 10), point(40, 40)]], priorityRegions: [], changedElementIds: [] };
 assert.equal(connectedStore.document.elements.length, 0, "AI-Pen ink is request context and never a permanent canvas element");
 connectedStore.acceptAgentContribution();
-assert.deepEqual(connectedStore.document.request?.ink, [], "accepting an agent contribution clears the transient AI-Pen overlay");
+assert.deepEqual(connectedStore.document.turn?.instructionInk, [], "accepting an agent contribution clears the transient AI-Pen overlay");
+const migratedWebBoard = migrateBoard({ version: 1, revision: 2, elements: [], agentElementIds: [], request: { id: "old", instruction: "old", selectionIds: [], createdAt: new Date(0).toISOString(), state: "ready", ink: [] } });
+assert.equal(migratedWebBoard?.version, 2, "legacy web boards migrate to the turn-based document format");
+assert.equal(migratedWebBoard?.turn?.status, "queued");
 connectedStore.applyOperation({ type: "create_shape", id: "source", kind: "rectangle", x: 0, y: 0, width: 100, height: 80 }, "agent");
 connectedStore.applyOperation({ type: "create_shape", id: "target", kind: "ellipse", x: 300, y: 0, width: 100, height: 80 }, "agent");
 connectedStore.applyOperation({ type: "connect", id: "link", fromId: "source", toId: "target", label: "dynamic" }, "agent");
@@ -110,6 +113,11 @@ const styled = connectedStore.document.elements.find((element) => element.id ===
 const styledHighlightIndex = connectedStore.document.elements.findIndex((element) => element.type === "highlight");
 assert.equal(styled?.type === "text" ? `${styled.fontFamily}/${styled.fontWeight}/${styled.fontStyle}/${styled.textAlign}` : "", "serif/700/italic/center", "agent typography stays editable as text metadata");
 assert.ok(styledHighlightIndex >= 0 && styledHighlightIndex < connectedStore.document.elements.findIndex((element) => element.id === "styled"), "agent text marking is a separate editable highlight layered behind the text");
+const noteIds = connectedStore.applyOperation({ type: "create_note", id: "study", x: 0, y: 260, text: "Key idea", blockStyle: "bullet", renderStyle: "sketch" }, "agent");
+assert.equal(noteIds.length, 2, "high-level notes compile to editable grouped elements");
+const tableIds = connectedStore.applyOperation({ type: "create_table", id: "facts", x: 0, y: 500, width: 360, height: 180, rows: 3, columns: 2, headers: ["Term", "Meaning"], cells: ["", "", "A", "B", "C", "D"] }, "agent");
+assert.ok(tableIds.length >= 8, "agent tables compile to ordinary cells and text");
+assert.equal(isCanvasOperation({ type: "set_locked", ids: noteIds, locked: true }), true);
 
 const flowVisual = { kind: "flowchart" as const, id: "flow", title: "Ablauf", nodes: [
   { id: "start", label: "Start", role: "primary" as const }, { id: "check", label: "Prüfen", role: "decision" as const }, { id: "done", label: "Fertig" }
@@ -123,7 +131,11 @@ assert.ok(plotOperations.every(isCanvasOperation) && plotOperations.some((operat
 const visualFixtures = [
   { kind: "mindmap" as const, id: "mind", title: "Thema", nodes: [{ id: "root", label: "Kern" }, { id: "branch", label: "Ast", parentId: "root" }] },
   { kind: "ui_wireframe" as const, id: "ui", title: "App", nodes: [{ id: "nav", label: "Navigation", role: "sidebar" as const }, { id: "cta", label: "Weiter", role: "button" as const }] },
-  { kind: "research_report" as const, id: "report", title: "Ergebnis", sections: [{ heading: "These", body: "Kurze Evidenz" }, { heading: "Fazit", body: "Nächster Schritt" }] }
+  { kind: "research_report" as const, id: "report", title: "Ergebnis", sections: [{ heading: "These", body: "Kurze Evidenz" }, { heading: "Fazit", body: "Nächster Schritt" }] },
+  { kind: "study_note" as const, id: "notes", title: "Biology", sections: [{ heading: "Cell", body: "Membrane\nNucleus" }] },
+  { kind: "timeline" as const, id: "history", title: "History", nodes: [{ id: "a", label: "1900" }, { id: "b", label: "1950" }] },
+  { kind: "comparison" as const, id: "compare", sections: [{ heading: "A", body: "Fast" }, { heading: "B", body: "Clear" }] },
+  { kind: "visual_explainer" as const, id: "explain", nodes: [{ id: "one", label: "Cause", detail: "Input" }, { id: "two", label: "Effect", detail: "Output" }] }
 ];
 for (const fixture of visualFixtures) { const operations = composeVisual(fixture); assert.ok(operations.length > 2 && operations.length <= 240 && operations.every(isCanvasOperation), `${fixture.kind} composer stays inside the progressive editable operation contract`); }
 
@@ -333,11 +345,11 @@ assert.ok(snappedLower!.y > 115, "marker stays on the lower row instead of jumpi
 void (async () => {
   const registered: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }> = [];
   Object.defineProperty(globalThis, "document", { configurable: true, value: { modelContext: { registerTool: (tool: { name: string; description?: string; inputSchema?: Record<string, unknown> }) => { registered.push(tool); } } } });
-  const available = await registerWhiteboardTools({ inspect: () => ({}), apply: async () => ({}), compose: async () => ({}), complete: () => ({}) }, new AbortController().signal);
-  assert.equal(available, true); assert.deepEqual(registered.map((tool) => tool.name), ["inspect_whiteboard", "apply_whiteboard_changes", "create_structured_visual", "complete_whiteboard_contribution"]);
+  const available = await registerWhiteboardTools({ session: () => ({}), waitForTurn: async () => ({}), inspect: () => ({}), focus: () => ({}), publishPlan: () => ({}), apply: async () => ({}), compose: async () => ({}), complete: () => ({}) }, new AbortController().signal);
+  assert.equal(available, true); assert.deepEqual(registered.map((tool) => tool.name), ["start_whiteboard_session", "wait_for_human_turn", "inspect_whiteboard", "focus_whiteboard_region", "publish_agent_plan", "apply_whiteboard_changes", "create_structured_visual", "complete_whiteboard_contribution"]);
   const visualTool = registered.find((tool) => tool.name === "create_structured_visual");
-  assert.ok(JSON.stringify(visualTool?.inputSchema).includes("ui_wireframe") && JSON.stringify(visualTool?.inputSchema).includes("math_steps"), "WebMCP advertises high-level UI, learning and diagram capabilities");
+  assert.ok(JSON.stringify(visualTool?.inputSchema).includes("ui_wireframe") && JSON.stringify(visualTool?.inputSchema).includes("study_note"), "WebMCP advertises high-level UI, learning and diagram capabilities");
   const inspectTool = registered.find((tool) => tool.name === "inspect_whiteboard"); const applyTool = registered.find((tool) => tool.name === "apply_whiteboard_changes"); const applySchema = JSON.stringify(applyTool?.inputSchema);
-  assert.ok(inspectTool?.description?.includes("AI-Pen") && applySchema.includes("highlight_text") && applySchema.includes("fontFamily") && applySchema.includes("arrowHeads"), "WebMCP exposes spatial ink context, typography, text marking and richer arrows to the agent");
+  assert.ok(inspectTool?.description?.includes("AI pen") && applySchema.includes("highlight_text") && applySchema.includes("fontFamily") && applySchema.includes("arrowHeads") && applySchema.includes("create_table"), "WebMCP exposes spatial ink context, typography, tables, text marking and richer arrows to the agent");
   console.log("core tests: ok");
 })().catch((error) => { console.error(error); process.exitCode = 1; });

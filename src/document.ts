@@ -3,11 +3,20 @@ import { InkPoint, InkStroke } from "./strokes";
 export type Paper = "grid" | "lines" | "blank";
 export type ShapeKind = "line" | "arrow" | "ellipse" | "rectangle" | "polygon";
 
-export interface StrokeElement extends InkStroke {
-  type: "stroke";
+export interface ElementMeta {
+  locked?: boolean;
+  opacity?: number;
+  semanticRole?: string;
+  renderStyle?: "clean" | "sketch";
 }
 
-export interface TextElement {
+export interface StrokeElement extends InkStroke, ElementMeta {
+  type: "stroke";
+  /** Optional local English handwriting transcription; never replaces the visible ink. */
+  recognitionText?: string;
+}
+
+export interface TextElement extends ElementMeta {
   type: "text";
   id: string;
   x: number;
@@ -23,9 +32,11 @@ export interface TextElement {
   fontWeight?: 400 | 500 | 600 | 700;
   fontStyle?: "normal" | "italic";
   textAlign?: "left" | "center" | "right";
+  blockStyle?: "body" | "heading-1" | "heading-2" | "heading-3" | "bullet" | "numbered" | "check" | "quote" | "code" | "math";
+  highlightColor?: string;
 }
 
-export interface HighlightElement {
+export interface HighlightElement extends ElementMeta {
   type: "highlight";
   id: string;
   x1: number;
@@ -36,7 +47,7 @@ export interface HighlightElement {
   opacity: number;
 }
 
-export interface ShapeElement {
+export interface ShapeElement extends ElementMeta {
   type: "shape";
   id: string;
   kind: ShapeKind;
@@ -53,7 +64,7 @@ export interface ShapeElement {
   endArrow?: boolean;
 }
 
-export interface ImageElement {
+export interface ImageElement extends ElementMeta {
   type: "image";
   id: string;
   x: number;
