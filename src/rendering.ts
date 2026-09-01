@@ -69,7 +69,16 @@ export function drawShape(context: CanvasRenderingContext2D, shape: ShapeElement
 export function drawHighlight(context: CanvasRenderingContext2D, highlight: HighlightElement): void {
   context.save(); context.globalAlpha = highlight.opacity; context.strokeStyle = highlight.color;
   context.lineWidth = highlight.size; context.lineCap = "round"; context.beginPath();
-  context.moveTo(highlight.x1, highlight.y); context.lineTo(highlight.x2, highlight.y); context.stroke(); context.restore();
+  const points = highlight.points;
+  if (points?.length) {
+    context.lineJoin = "round"; context.moveTo(points[0].x, points[0].y);
+    for (let index = 1; index < points.length - 1; index += 1) {
+      const point = points[index]; const next = points[index + 1];
+      context.quadraticCurveTo(point.x, point.y, (point.x + next.x) / 2, (point.y + next.y) / 2);
+    }
+    const last = points.at(-1)!; context.lineTo(last.x, last.y);
+  } else { context.moveTo(highlight.x1, highlight.y); context.lineTo(highlight.x2, highlight.y); }
+  context.stroke(); context.restore();
 }
 
 export function drawText(context: CanvasRenderingContext2D, text: TextElement, fontFamily?: string): void {
@@ -104,7 +113,14 @@ export function drawText(context: CanvasRenderingContext2D, text: TextElement, f
     for (const [index, line] of lines.entries()) { const metrics = context.measureText(line); const left = text.textAlign === "center" ? anchorX - metrics.width / 2 : text.textAlign === "right" ? anchorX - metrics.width : anchorX; context.fillRect(left - 4, text.baseline + index * lineHeight - text.fontSize, metrics.width + 8, text.fontSize * 1.18); }
     context.restore(); context.fillStyle = visibleInkColor(text.color);
   }
-  for (const [index, line] of lines.entries()) context.fillText(line, anchorX, text.baseline + index * lineHeight);
+  for (const [index, line] of lines.entries()) {
+    const baseline = text.baseline + index * lineHeight; context.fillText(line, anchorX, baseline);
+    if (text.textDecoration && text.textDecoration !== "none") {
+      const metrics = context.measureText(line); const left = text.textAlign === "center" ? anchorX - metrics.width / 2 : text.textAlign === "right" ? anchorX - metrics.width : anchorX;
+      const y = text.textDecoration === "line-through" ? baseline - text.fontSize * .32 : baseline + text.fontSize * .09;
+      context.save(); context.strokeStyle = visibleInkColor(text.color); context.lineWidth = Math.max(1, text.fontSize * .055); context.beginPath(); context.moveTo(left, y); context.lineTo(left + metrics.width, y); context.stroke(); context.restore();
+    }
+  }
   context.restore();
 }
 

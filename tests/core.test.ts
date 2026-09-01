@@ -75,8 +75,14 @@ assert.ok(estimateTextHeight("eine längere mehrzeilige Textbox", 120, 24) > 24 
 assert.equal(isCanvasOperation({ type: "connect", fromId: "a", toId: "b" }), true);
 assert.equal(isCanvasOperation({ type: "translate", ids: ["a"], dx: Number.NaN, dy: 2 }), false, "invalid agent geometry is rejected before it reaches the board");
 assert.equal(isCanvasOperation({ type: "create_text", x: 0, y: 0, text: "Titel", fontFamily: "serif", fontWeight: 700, textAlign: "center" }), true, "agent text exposes curated typography without arbitrary font loading");
+assert.equal(isCanvasOperation({ type: "create_text", x: 0, y: 0, text: "Word-like", textDecoration: "underline" }), true, "human and agent text share portable Word-like decoration metadata");
 assert.equal(isCanvasOperation({ type: "create_arrow", from: point(0, 0), to: point(100, 0), arrowHeads: "both", lineStyle: "dashed" }), true, "agent arrows support direction and line styling");
 assert.equal(isCanvasOperation({ type: "update_style", ids: ["title"], fontFamily: "comic-sans" }), false, "unsupported font roles are rejected at the WebMCP boundary");
+const freeMarker = operationElement({ type: "create_highlight", id: "free-marker", x: 10, y: 20, width: 70, points: [point(10, 20), point(40, 31), point(80, 26)], size: 20 });
+assert.deepEqual(elementBounds(freeMarker), { minX: 0, minY: 10, maxX: 90, maxY: 41 }, "a real marker gesture keeps its freehand vertical movement and full painted bounds");
+translateElement(freeMarker, 5, -5); assert.deepEqual(freeMarker.type === "highlight" ? freeMarker.points?.map(({ x, y }) => [x, y]) : [], [[15, 15], [45, 26], [85, 21]], "free marker points move with the shared selection model");
+scaleElement(freeMarker, elementBounds(freeMarker), { minX: 0, minY: 0, maxX: 180, maxY: 62 });
+assert.ok(freeMarker.type === "highlight" && (freeMarker.points?.[2].x ?? 0) > 150, "free marker points resize as editable canvas content");
 
 const storedBoards = new Map<string, string>();
 Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
@@ -106,12 +112,13 @@ connectedStore.changed();
 assert.equal(connectedStore.document.elements.some((element) => element.id === "link"), false, "deleting a connected node removes its dangling connector");
 assert.equal(connectedStore.document.agentElementIds.includes("link"), false, "removed connector no longer appears in the agent contribution metadata");
 
-const styledText = connectedStore.applyOperation({ type: "create_text", id: "styled", x: 20, y: 160, width: 260, text: "Important", fontFamily: "serif", fontWeight: 700, fontStyle: "italic", textAlign: "center", color: "#2457e6" }, "agent");
+const styledText = connectedStore.applyOperation({ type: "create_text", id: "styled", x: 20, y: 160, width: 260, text: "Important", fontFamily: "serif", fontWeight: 700, fontStyle: "italic", textDecoration: "underline", textAlign: "center", color: "#2457e6" }, "agent");
 assert.deepEqual(styledText, ["styled"]);
 connectedStore.applyOperation({ type: "highlight_text", ids: ["styled"], color: "#ffd84d", opacity: 0.22, padding: 8 }, "agent");
 const styled = connectedStore.document.elements.find((element) => element.id === "styled");
 const styledHighlightIndex = connectedStore.document.elements.findIndex((element) => element.type === "highlight");
 assert.equal(styled?.type === "text" ? `${styled.fontFamily}/${styled.fontWeight}/${styled.fontStyle}/${styled.textAlign}` : "", "serif/700/italic/center", "agent typography stays editable as text metadata");
+assert.equal(styled?.type === "text" ? styled.textDecoration : "", "underline");
 assert.ok(styledHighlightIndex >= 0 && styledHighlightIndex < connectedStore.document.elements.findIndex((element) => element.id === "styled"), "agent text marking is a separate editable highlight layered behind the text");
 const noteIds = connectedStore.applyOperation({ type: "create_note", id: "study", x: 0, y: 260, text: "Key idea", blockStyle: "bullet", renderStyle: "sketch" }, "agent");
 assert.equal(noteIds.length, 2, "high-level notes compile to editable grouped elements");

@@ -61,7 +61,7 @@ export class WhiteboardApp {
 
   constructor() {
     this.renderer.instructionInk = structuredClone(this.store.document.turn?.instructionInk ?? []);
-    this.bindToolbar(); this.bindSelectionTools(); this.bindCanvas(); this.bindKeyboard(); this.bindCollaboration(); this.bindSettings(); this.bindFiles();
+    this.bindToolbar(); this.bindSelectionTools(); this.bindCanvas(); this.bindKeyboard(); this.bindCollaboration(); this.bindSettings(); this.bindFiles(); this.bindResponsiveLayout();
     this.store.addEventListener("change", () => { this.renderer.request(); this.updateUi(); });
     this.renderer.request(); this.updateUi();
     void registerWhiteboardTools({ session: () => this.session(), waitForTurn: (timeout) => this.waitForTurn(timeout), inspect: (scope) => this.inspect(scope), focus: (bounds) => this.focus(bounds), publishPlan: (summary, lease) => this.publishPlan(summary, lease), apply: (operations, revision, lease) => this.applyAgentOperations(operations, revision, 160, 35, lease), compose: (input, revision, lease) => this.composeAgentVisual(input, revision, lease), complete: (summary, lease) => this.completeAgent(summary, lease) }, this.abort.signal)
@@ -96,6 +96,17 @@ export class WhiteboardApp {
 
   private togglePopover(id: string): void {
     for (const candidate of ["color-popover", "settings-popover"]) { const element = byId<HTMLElement>(candidate); element.hidden = candidate === id ? !element.hidden : true; }
+  }
+
+  private bindResponsiveLayout(): void {
+    const toolbar = document.querySelector<HTMLElement>(".toolbar"); const utility = document.querySelector<HTMLElement>(".utility");
+    if (!toolbar || !utility) return;
+    const measure = (): void => {
+      const toolbarRect = toolbar.getBoundingClientRect(); const utilityRect = utility.getBoundingClientRect();
+      document.documentElement.style.setProperty("--toolbar-bottom", `${Math.ceil(toolbarRect.bottom)}px`);
+      document.documentElement.style.setProperty("--utility-bottom", `${Math.ceil(utilityRect.bottom)}px`);
+    };
+    const observer = new ResizeObserver(measure); observer.observe(toolbar); observer.observe(utility); window.addEventListener("resize", measure); requestAnimationFrame(measure);
   }
 
   private bindSelectionTools(): void {
@@ -136,7 +147,7 @@ export class WhiteboardApp {
       const stroke = [{ ...point, pressure: event.pressure || 0.5, time: event.timeStamp }]; this.renderer.instructionInk.push(stroke); this.interaction = { mode: "instruction", pointerId: event.pointerId, startClient: { x: event.clientX, y: event.clientY }, startWorld: point, instructionIndex: this.renderer.instructionInk.length - 1 }; this.updateContextPrompt(); this.renderer.request(); return;
     }
     if (this.tool === "marker") {
-      this.store.checkpoint(); const markerId = uuid("highlight"); this.store.document.elements.push({ type: "highlight", id: markerId, x1: point.x, x2: point.x, y: point.y, size: 28, color: this.penColor === "#080808" ? "#ffd84d" : this.penColor, opacity: Math.min(.42, this.opacity * .32) });
+      this.store.checkpoint(); const markerId = uuid("highlight"); this.store.document.elements.push({ type: "highlight", id: markerId, x1: point.x, x2: point.x, y: point.y, points: [{ ...point, pressure: event.pressure || .5, time: event.timeStamp }], size: 28, color: this.penColor === "#080808" ? "#ffd84d" : this.penColor, opacity: Math.min(.42, this.opacity * .32) });
       this.interaction = { mode: "marker", pointerId: event.pointerId, startClient: { x: event.clientX, y: event.clientY }, startWorld: point, markerId }; this.renderer.request(); return;
     }
     if (this.tool === "rectangle" || this.tool === "ellipse" || this.tool === "arrow") {
@@ -179,7 +190,12 @@ export class WhiteboardApp {
     if (interaction.mode === "instruction") {
       const stroke = this.renderer.instructionInk[interaction.instructionIndex ?? -1]; if (!stroke) return; const samples = event.getCoalescedEvents?.() ?? [event]; for (const sample of samples) { const candidate = this.renderer.world(sample.clientX, sample.clientY); candidate.pressure = sample.pressure || 0.5; candidate.time = sample.timeStamp; stroke.push(candidate); } this.renderer.request(); return;
     }
-    if (interaction.mode === "marker") { const marker = this.store.document.elements.find((element) => element.id === interaction.markerId); if (marker?.type === "highlight") marker.x2 = point.x; this.renderer.request(); return; }
+    if (interaction.mode === "marker") {
+      const marker = this.store.document.elements.find((element) => element.id === interaction.markerId); if (marker?.type !== "highlight") return;
+      const samples = event.getCoalescedEvents?.() ?? [event]; marker.points ??= [{ ...interaction.startWorld }];
+      for (const sample of samples) { const candidate = this.renderer.world(sample.clientX, sample.clientY); candidate.pressure = sample.pressure || .5; candidate.time = sample.timeStamp; const previous = marker.points.at(-1); if (!previous || Math.hypot(candidate.x - previous.x, candidate.y - previous.y) >= .7 / this.renderer.camera.zoom) marker.points.push(candidate); }
+      marker.x2 = point.x; marker.y = point.y; this.renderer.request(); return;
+    }
     if (interaction.mode === "shape") { const shape = this.store.document.elements.find((element): element is ShapeElement => element.id === interaction.elementId && element.type === "shape"); if (shape) { shape.points[1] = point; this.renderer.request(); } return; }
     if (interaction.mode === "table") { this.renderer.lasso = [interaction.startWorld, { x: point.x, y: interaction.startWorld.y, pressure: .5 }, point, { x: interaction.startWorld.x, y: point.y, pressure: .5 }, interaction.startWorld]; this.renderer.request(); return; }
     if (interaction.mode === "lasso") { this.renderer.lasso.push(point); this.renderer.request(); return; }
@@ -214,7 +230,10 @@ export class WhiteboardApp {
       }
       this.store.changed();
     } else if (interaction.mode === "instruction") this.updateContextPrompt();
-    else if (interaction.mode === "marker") { this.finishMarker(interaction.markerId); this.store.changed(); }
+    else if (interaction.mode === "marker") {
+      const marker = this.store.document.elements.find((element) => element.id === interaction.markerId); if (marker?.type === "highlight") { const end = this.renderer.world(event.clientX, event.clientY); end.pressure = event.pressure || .5; end.time = event.timeStamp; marker.points ??= [{ ...interaction.startWorld }]; const previous = marker.points.at(-1); if (!previous || Math.hypot(end.x - previous.x, end.y - previous.y) > .5) marker.points.push(end); marker.x2 = end.x; marker.y = end.y; }
+      this.finishMarker(interaction.markerId); this.store.changed();
+    }
     else if (interaction.mode === "table") {
       const width = Math.max(180, Math.abs(event.clientX - interaction.startClient.x) / this.renderer.camera.zoom); const height = Math.max(120, Math.abs(this.renderer.world(event.clientX, event.clientY).y - interaction.startWorld.y));
       const x = Math.min(interaction.startWorld.x, this.renderer.world(event.clientX, event.clientY).x); const y = Math.min(interaction.startWorld.y, this.renderer.world(event.clientX, event.clientY).y);
@@ -239,11 +258,13 @@ export class WhiteboardApp {
 
   private finishMarker(markerId?: string): void {
     const marker = this.store.document.elements.find((element) => element.id === markerId); if (marker?.type !== "highlight") return;
-    if (Math.abs(marker.x2 - marker.x1) < 4) { this.store.document.elements = this.store.document.elements.filter((element) => element.id !== marker.id); return; }
-    if (this.store.document.settings.smartHighlight) {
-      const minX = Math.min(marker.x1, marker.x2); const maxX = Math.max(marker.x1, marker.x2); const radius = marker.size * .85;
-      const boxes = this.store.document.elements.filter((element) => element.type === "text" || element.type === "stroke").map((element) => ({ element, bounds: boardBounds([element])! })).filter(({ bounds }) => bounds.maxX >= minX && bounds.minX <= maxX && bounds.maxY >= marker.y - radius && bounds.minY <= marker.y + radius);
-      if (boxes.length) { marker.x1 = Math.min(...boxes.map(({ bounds }) => bounds.minX)) - 7; marker.x2 = Math.max(...boxes.map(({ bounds }) => bounds.maxX)) + 7; marker.y = boxes.reduce((sum, { bounds }) => sum + (bounds.minY + bounds.maxY) / 2, 0) / boxes.length; marker.size = Math.max(18, Math.min(42, Math.max(...boxes.map(({ bounds }) => bounds.maxY - bounds.minY)) * .72)); }
+    const points = marker.points ?? []; const length = points.slice(1).reduce((total, point, index) => total + Math.hypot(point.x - points[index].x, point.y - points[index].y), 0);
+    if (length < 4) { this.store.document.elements = this.store.document.elements.filter((element) => element.id !== marker.id); return; }
+    const gesture = boardBounds([{ ...marker, points }]); const primarilyHorizontal = Boolean(gesture && gesture.maxX - gesture.minX >= (gesture.maxY - gesture.minY) * 1.2);
+    if (this.store.document.settings.smartHighlight && primarilyHorizontal && gesture) {
+      const centreY = points.reduce((sum, point) => sum + point.y, 0) / points.length; const minX = gesture.minX + marker.size / 2; const maxX = gesture.maxX - marker.size / 2; const radius = marker.size * .8;
+      const boxes = this.store.document.elements.filter((element) => element.id !== marker.id && (element.type === "text" || element.type === "stroke")).map((element) => ({ bounds: boardBounds([element])! })).filter(({ bounds }) => bounds.maxX >= minX && bounds.minX <= maxX && bounds.maxY >= centreY - radius && bounds.minY <= centreY + radius);
+      if (boxes.length) { marker.x1 = Math.min(...boxes.map(({ bounds }) => bounds.minX)) - 7; marker.x2 = Math.max(...boxes.map(({ bounds }) => bounds.maxX)) + 7; marker.y = boxes.reduce((sum, { bounds }) => sum + (bounds.minY + bounds.maxY) / 2, 0) / boxes.length; marker.size = Math.max(18, Math.min(42, Math.max(...boxes.map(({ bounds }) => bounds.maxY - bounds.minY)) * .72)); delete marker.points; }
     }
     this.recentHumanEditIds.add(marker.id);
   }
@@ -264,18 +285,36 @@ export class WhiteboardApp {
 
   private beginText(point: InkPoint, existing?: Extract<PageElement, { type: "text" }>, initialStyle: Extract<PageElement, { type: "text" }>["blockStyle"] = "body", sticky = false): void {
     const shell = document.createElement("div"); shell.className = "text-editor-shell"; const controls = document.createElement("div"); controls.className = "text-controls";
-    const style = document.createElement("select"); style.setAttribute("aria-label", "Textstil"); for (const [value, label] of [["body", "Text"], ["heading-1", "Titel"], ["heading-2", "Überschrift"], ["bullet", "Stichpunkte"], ["numbered", "Nummeriert"], ["check", "Checkliste"], ["quote", "Zitat"], ["code", "Code"], ["math", "Mathe"]]) { const option = document.createElement("option"); option.value = value; option.textContent = label; style.appendChild(option); } style.value = existing?.blockStyle ?? initialStyle;
-    const input = document.createElement("textarea"); input.setAttribute("aria-label", "Text auf dem Whiteboard"); input.rows = 2; controls.append(style); shell.append(controls, input);
+    const select = (label: string, values: Array<[string, string]>, current: string): HTMLSelectElement => { const element = document.createElement("select"); element.setAttribute("aria-label", label); for (const [value, text] of values) { const option = document.createElement("option"); option.value = value; option.textContent = text; element.appendChild(option); } element.value = current; return element; };
+    const style = select("Textstil", [["body", "Text"], ["heading-1", "Titel"], ["heading-2", "Überschrift"], ["heading-3", "Zwischentitel"], ["bullet", "Stichpunkte"], ["numbered", "Nummeriert"], ["check", "Checkliste"], ["quote", "Zitat"], ["code", "Code"], ["math", "Mathe"]], existing?.blockStyle ?? initialStyle ?? "body");
+    const family = select("Schriftart", [["sans", "Sans"], ["serif", "Serif"], ["mono", "Mono"], ["handwriting", "Handschrift"]], existing?.fontFamily ?? "sans");
+    const size = document.createElement("input"); size.type = "number"; size.min = "10"; size.max = "180"; size.step = "1"; size.value = String(Math.round(existing?.fontSize ?? (initialStyle === "heading-1" ? 48 : initialStyle === "heading-2" ? 38 : 30))); size.setAttribute("aria-label", "Schriftgröße");
+    const formatButton = (label: string, text: string, pressed: boolean): HTMLButtonElement => { const button = document.createElement("button"); button.type = "button"; button.setAttribute("aria-label", label); button.setAttribute("aria-pressed", String(pressed)); button.textContent = text; return button; };
+    const bold = formatButton("Fett", "B", (existing?.fontWeight ?? 400) >= 600); const italic = formatButton("Kursiv", "I", existing?.fontStyle === "italic"); const underline = formatButton("Unterstrichen", "U", existing?.textDecoration === "underline"); underline.classList.add("is-underline");
+    const alignLeft = formatButton("Linksbündig", "≡", (existing?.textAlign ?? "left") === "left"); const alignCenter = formatButton("Zentriert", "≡", existing?.textAlign === "center"); const alignRight = formatButton("Rechtsbündig", "≡", existing?.textAlign === "right"); alignLeft.classList.add("align-left"); alignCenter.classList.add("align-center"); alignRight.classList.add("align-right");
+    const color = document.createElement("input"); color.type = "color"; color.value = existing?.color ?? this.penColor; color.setAttribute("aria-label", "Textfarbe");
+    const done = document.createElement("button"); done.type = "button"; done.className = "text-done"; done.textContent = "Fertig";
+    const input = document.createElement("textarea"); input.setAttribute("aria-label", "Text auf dem Whiteboard"); input.rows = 3; input.spellcheck = true;
+    const group = (...children: HTMLElement[]): HTMLSpanElement => { const element = document.createElement("span"); element.className = "text-control-group"; element.append(...children); return element; };
+    controls.append(group(style, family, size), group(bold, italic, underline), group(alignLeft, alignCenter, alignRight), group(color), done); shell.append(controls, input);
+    let alignment: "left" | "center" | "right" = existing?.textAlign ?? "left";
+    const toggle = (button: HTMLButtonElement): void => button.setAttribute("aria-pressed", String(button.getAttribute("aria-pressed") !== "true"));
+    const updatePreview = (): void => { const families = { sans: "Inter, system-ui, sans-serif", serif: "Georgia, serif", mono: "Consolas, monospace", handwriting: "'Segoe Print', cursive" }; input.style.fontFamily = families[family.value as keyof typeof families]; input.style.fontSize = `${Math.max(10, Math.min(180, Number(size.value) || 30))}px`; input.style.fontWeight = bold.getAttribute("aria-pressed") === "true" ? "700" : "400"; input.style.fontStyle = italic.getAttribute("aria-pressed") === "true" ? "italic" : "normal"; input.style.textDecoration = underline.getAttribute("aria-pressed") === "true" ? "underline" : "none"; input.style.textAlign = alignment; input.style.color = color.value; };
+    for (const button of [bold, italic, underline]) button.addEventListener("click", () => { toggle(button); updatePreview(); input.focus(); });
+    for (const [button, value] of [[alignLeft, "left"], [alignCenter, "center"], [alignRight, "right"]] as const) button.addEventListener("click", () => { alignment = value; for (const candidate of [alignLeft, alignCenter, alignRight]) candidate.setAttribute("aria-pressed", String(candidate === button)); updatePreview(); input.focus(); });
+    for (const control of [family, size, color]) control.addEventListener("input", updatePreview); style.addEventListener("change", () => { if (!existing) { if (style.value === "heading-1") size.value = "48"; else if (style.value === "heading-2") size.value = "38"; else if (style.value === "heading-3") size.value = "32"; } updatePreview(); });
     const anchor = existing ? { x: existing.x, y: existing.baseline - existing.fontSize } : point;
-    const screen = this.renderer.screen(anchor); const rect = this.canvas.getBoundingClientRect(); shell.style.left = `${rect.left + screen.x}px`; shell.style.top = `${rect.top + screen.y}px`; input.value = existing?.text ?? ""; document.body.appendChild(shell); input.focus(); input.select();
-    shell.style.width = `${Math.max(220, (existing?.width ?? (sticky ? 320 : 260)) * this.renderer.camera.zoom)}px`; shell.style.height = `${Math.max(126, (existing?.height ?? (sticky ? 190 : 94)) * this.renderer.camera.zoom + 41)}px`;
-    let committed = false; const commit = (): void => { if (committed || !shell.isConnected) return; committed = true; const text = input.value.trim(); const editorRect = shell.getBoundingClientRect(); shell.remove(); if (!text) return; this.store.checkpoint();
-      const width = Math.max(80, editorRect.width / this.renderer.camera.zoom); const height = Math.max(40, editorRect.height / this.renderer.camera.zoom);
-      if (existing) { const current = this.store.document.elements.find((element) => element.id === existing.id); if (current?.type === "text") { current.text = text; current.width = width; current.blockStyle = style.value as typeof current.blockStyle; current.height = Math.max(height - 41, estimateTextHeight(text, width, current.fontSize)); this.recentHumanEditIds.add(current.id); } }
-      else if (sticky) { const ids = this.store.applyOperation({ type: "create_note", x: point.x, y: point.y, width, height: Math.max(100, height - 41), text, color: this.penColor, blockStyle: style.value as Extract<PageElement, { type: "text" }>["blockStyle"] }, "human"); ids.forEach((id) => this.recentHumanEditIds.add(id)); }
-      else { const fontSize = style.value === "heading-1" ? 48 : style.value === "heading-2" ? 38 : 30; const element = { type: "text", id: uuid("text"), x: point.x, baseline: point.y + fontSize, width, height: Math.max(height - 41, estimateTextHeight(text, width, fontSize)), fontSize, color: this.penColor, text, blockStyle: style.value as Extract<PageElement, { type: "text" }>["blockStyle"], semanticRole: "text-field" } as const; this.store.document.elements.push(element); this.recentHumanEditIds.add(element.id); }
+    const screen = this.renderer.screen(anchor); const rect = this.canvas.getBoundingClientRect(); input.value = existing?.text ?? ""; document.body.appendChild(shell);
+    const editorWidth = Math.min(window.innerWidth - 20, Math.max(360, (existing?.width ?? (sticky ? 360 : 420)) * this.renderer.camera.zoom)); const editorHeight = Math.min(window.innerHeight - 20, Math.max(220, (existing?.height ?? (sticky ? 190 : 150)) * this.renderer.camera.zoom + 92));
+    shell.style.width = `${editorWidth}px`; shell.style.height = `${editorHeight}px`; shell.style.left = `${Math.max(10, Math.min(window.innerWidth - editorWidth - 10, rect.left + screen.x))}px`; shell.style.top = `${Math.max(10, Math.min(window.innerHeight - editorHeight - 10, rect.top + screen.y))}px`; updatePreview(); input.focus(); input.select();
+    let committed = false; const commit = (): void => { if (committed || !shell.isConnected) return; committed = true; const text = input.value.trim(); const editorRect = shell.getBoundingClientRect(); const contentHeight = Math.max(40, (editorRect.height - controls.getBoundingClientRect().height) / this.renderer.camera.zoom); shell.remove(); if (!text) return; this.store.checkpoint();
+      const width = Math.max(80, editorRect.width / this.renderer.camera.zoom); const fontSize = Math.max(10, Math.min(180, Number(size.value) || 30)); const fontWeight = bold.getAttribute("aria-pressed") === "true" ? 700 as const : 400 as const; const fontStyle = italic.getAttribute("aria-pressed") === "true" ? "italic" as const : "normal" as const; const textDecoration = underline.getAttribute("aria-pressed") === "true" ? "underline" as const : "none" as const;
+      if (existing) { const current = this.store.document.elements.find((element) => element.id === existing.id); if (current?.type === "text") { current.text = text; current.width = width; current.blockStyle = style.value as typeof current.blockStyle; current.fontSize = fontSize; current.fontFamily = family.value as typeof current.fontFamily; current.fontWeight = fontWeight; current.fontStyle = fontStyle; current.textDecoration = textDecoration; current.textAlign = alignment; current.color = color.value; current.height = Math.max(contentHeight, estimateTextHeight(text, width, fontSize)); this.recentHumanEditIds.add(current.id); } }
+      else if (sticky) { const ids = this.store.applyOperation({ type: "create_note", x: point.x, y: point.y, width, height: Math.max(100, contentHeight), text, color: color.value, blockStyle: style.value as Extract<PageElement, { type: "text" }>["blockStyle"] }, "human"); ids.forEach((id) => this.recentHumanEditIds.add(id)); }
+      else { const element: Extract<PageElement, { type: "text" }> = { type: "text", id: uuid("text"), x: point.x, baseline: point.y + fontSize, width, height: Math.max(contentHeight, estimateTextHeight(text, width, fontSize)), fontSize, color: color.value, text, fontFamily: family.value as Extract<PageElement, { type: "text" }>["fontFamily"], fontWeight, fontStyle, textDecoration, textAlign: alignment, blockStyle: style.value as Extract<PageElement, { type: "text" }>["blockStyle"], semanticRole: "text-field" }; this.store.document.elements.push(element); this.recentHumanEditIds.add(element.id); }
       this.store.changed(); };
-    shell.addEventListener("focusout", (event) => { if (!shell.contains(event.relatedTarget as Node | null)) commit(); }); input.addEventListener("keydown", (event) => { if (event.key === "Escape") { input.value = ""; commit(); } if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); event.stopPropagation(); commit(); this.submitHumanTurn(); } });
+    const cancel = (): void => { if (committed) return; committed = true; shell.remove(); };
+    done.addEventListener("click", commit); shell.addEventListener("focusout", () => window.setTimeout(() => { if (shell.isConnected && !shell.contains(document.activeElement)) commit(); }, 0)); input.addEventListener("keydown", (event) => { if (event.key === "Escape") { event.preventDefault(); cancel(); } if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); event.stopPropagation(); commit(); this.submitHumanTurn(); } });
   }
 
   private bindKeyboard(): void {
@@ -331,7 +370,8 @@ export class WhiteboardApp {
     if (new Set(explicitIds).size !== explicitIds.length || explicitIds.some((id) => existing.has(id))) return { ok: false, error: "id_conflict", instruction: "Use unique IDs that are not already present on the board; inspect again if needed." };
     this.store.beginAgentContribution(); this.updateUi(); this.setStatus("Agent arbeitet auf dem Canvas …"); const created: string[] = [];
     for (const operation of operations.slice(0, maxOperations)) { const targetIds = this.store.expandGroupIds(operationTargetIds(operation)); const ids = this.store.applyOperation(operation, "agent"); created.push(...ids); this.renderer.activeAgentIds = new Set([...this.renderer.activeAgentIds, ...ids, ...targetIds]); this.store.changed(); await new Promise((resolve) => setTimeout(resolve, delay)); }
-    return { ok: true, revision: this.store.document.revision, createdIds: created, message: "Changes are visible and editable. Call complete_whiteboard_contribution with the same lease." };
+    const present = new Set(this.store.document.elements.map((element) => element.id));
+    return { ok: true, revision: this.store.document.revision, createdIds: created.filter((id) => present.has(id)), message: "Changes are visible and editable. Call complete_whiteboard_contribution with the same lease." };
   }
 
   private async composeAgentVisual(input: VisualCompositionInput, baseRevision?: number, leaseToken?: string): Promise<Record<string, unknown>> {

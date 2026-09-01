@@ -33,6 +33,7 @@ export interface TextElement extends ElementMeta {
   fontFamily?: "sans" | "serif" | "mono" | "handwriting";
   fontWeight?: 400 | 500 | 600 | 700;
   fontStyle?: "normal" | "italic";
+  textDecoration?: "none" | "underline" | "line-through";
   textAlign?: "left" | "center" | "right";
   blockStyle?: "body" | "heading-1" | "heading-2" | "heading-3" | "bullet" | "numbered" | "check" | "quote" | "code" | "math";
   highlightColor?: string;
@@ -47,6 +48,8 @@ export interface HighlightElement extends ElementMeta {
   size: number;
   color: string;
   opacity: number;
+  /** A real marker gesture. Legacy/smart highlights remain a straight x1/x2 line. */
+  points?: InkPoint[];
 }
 
 export interface ShapeElement extends ElementMeta {
@@ -303,6 +306,13 @@ export function elementBounds(element: PageElement): { minX: number; minY: numbe
     };
   }
   if (element.type === "highlight") {
+    if (element.points?.length) {
+      const bounds = element.points.reduce((box, point) => ({
+        minX: Math.min(box.minX, point.x), minY: Math.min(box.minY, point.y),
+        maxX: Math.max(box.maxX, point.x), maxY: Math.max(box.maxY, point.y)
+      }), { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity });
+      return { minX: bounds.minX - element.size / 2, minY: bounds.minY - element.size / 2, maxX: bounds.maxX + element.size / 2, maxY: bounds.maxY + element.size / 2 };
+    }
     return {
       minX: Math.min(element.x1, element.x2),
       minY: element.y - element.size / 2,

@@ -107,7 +107,7 @@ export class BoardStore extends EventTarget {
     } else if (operation.type === "update_text") {
       const element = this.document.elements.find((candidate) => candidate.id === operation.id); if (element?.type === "text") { element.text = operation.text; element.height = estimateTextHeight(element.text, element.width, element.fontSize); }
     } else if (operation.type === "update_points") {
-      const element = this.document.elements.find((candidate) => candidate.id === operation.id); if (element?.type === "stroke" || element?.type === "shape") element.points = operation.points.map((point) => ({ ...point, pressure: point.pressure ?? 0.5 }));
+      const element = this.document.elements.find((candidate) => candidate.id === operation.id); if (element?.type === "stroke" || element?.type === "shape" || element?.type === "highlight") element.points = operation.points.map((point) => ({ ...point, pressure: point.pressure ?? 0.5 }));
     } else if (operation.type === "update_style") {
       const expanded = this.expandGroupIds(operation.ids); for (const element of this.elementsFor(expanded)) {
         if (operation.color && "color" in element) element.color = operation.color;
@@ -123,7 +123,7 @@ export class BoardStore extends EventTarget {
           }
         } else if (element.type === "text") {
           if (operation.fontSize !== undefined) element.fontSize = Math.max(10, Math.min(180, operation.fontSize));
-          if (operation.fontFamily) element.fontFamily = operation.fontFamily; if (operation.fontWeight) element.fontWeight = operation.fontWeight; if (operation.fontStyle) element.fontStyle = operation.fontStyle; if (operation.textAlign) element.textAlign = operation.textAlign; if (operation.blockStyle) element.blockStyle = operation.blockStyle; if (operation.highlightColor !== undefined) element.highlightColor = operation.highlightColor || undefined;
+          if (operation.fontFamily) element.fontFamily = operation.fontFamily; if (operation.fontWeight) element.fontWeight = operation.fontWeight; if (operation.fontStyle) element.fontStyle = operation.fontStyle; if (operation.textDecoration) element.textDecoration = operation.textDecoration; if (operation.textAlign) element.textAlign = operation.textAlign; if (operation.blockStyle) element.blockStyle = operation.blockStyle; if (operation.highlightColor !== undefined) element.highlightColor = operation.highlightColor || undefined;
           element.height = estimateTextHeight(element.text, element.width, element.fontSize);
         }
       }
