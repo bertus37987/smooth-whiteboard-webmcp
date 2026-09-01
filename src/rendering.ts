@@ -36,7 +36,10 @@ export function drawShape(context: CanvasRenderingContext2D, shape: ShapeElement
   if (shape.points.length === 0) return;
   context.save(); context.strokeStyle = visibleInkColor(shape.color); context.lineWidth = shape.size;
   context.lineCap = shape.kind === "ellipse" || shape.kind === "line" || shape.kind === "arrow" ? "round" : "butt";
-  context.lineJoin = shape.kind === "ellipse" ? "round" : "miter"; context.beginPath();
+  context.lineJoin = shape.kind === "ellipse" ? "round" : "miter";
+  if (shape.lineStyle === "dashed") context.setLineDash([shape.size * 3.5, shape.size * 2.5]);
+  else if (shape.lineStyle === "dotted") { context.setLineDash([0.01, shape.size * 2.8]); context.lineCap = "round"; }
+  context.beginPath();
   const first = shape.points[0];
   if (shape.kind === "ellipse") {
     const box = shape.points.reduce((result, point) => ({ minX: Math.min(result.minX, point.x), minY: Math.min(result.minY, point.y), maxX: Math.max(result.maxX, point.x), maxY: Math.max(result.maxY, point.y) }), { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity });
@@ -47,7 +50,11 @@ export function drawShape(context: CanvasRenderingContext2D, shape: ShapeElement
   } else {
     context.moveTo(first.x, first.y); for (const point of shape.points.slice(1)) context.lineTo(point.x, point.y);
     if (shape.closed) context.closePath();
-    if (shape.kind === "arrow" && shape.points.length >= 2) drawArrowHead(context, first, shape.points[shape.points.length - 1], shape.size);
+    if (shape.kind === "arrow" && shape.points.length >= 2) {
+      const last = shape.points[shape.points.length - 1];
+      if (shape.startArrow) drawArrowHead(context, last, first, shape.size);
+      if (shape.endArrow !== false) drawArrowHead(context, first, last, shape.size);
+    }
   }
   if (shape.closed && shape.fillColor && (shape.fillOpacity ?? 0) > 0) {
     context.save(); context.globalAlpha = shape.fillOpacity ?? 0; context.fillStyle = shape.fillColor; context.fill(); context.restore();
@@ -61,9 +68,17 @@ export function drawHighlight(context: CanvasRenderingContext2D, highlight: High
   context.moveTo(highlight.x1, highlight.y); context.lineTo(highlight.x2, highlight.y); context.stroke(); context.restore();
 }
 
-export function drawText(context: CanvasRenderingContext2D, text: TextElement, fontFamily = "ui-sans-serif, system-ui, sans-serif"): void {
-  context.save(); context.fillStyle = visibleInkColor(text.color); context.font = `${text.fontSize}px ${fontFamily}`;
+export function drawText(context: CanvasRenderingContext2D, text: TextElement, fontFamily?: string): void {
+  const families = {
+    sans: "Inter, ui-sans-serif, system-ui, sans-serif",
+    serif: "Georgia, Cambria, serif",
+    mono: '"SFMono-Regular", Consolas, "Liberation Mono", monospace',
+    handwriting: '"Segoe Print", "Bradley Hand", cursive'
+  } as const;
+  const family = fontFamily ?? families[text.fontFamily ?? "sans"];
+  context.save(); context.fillStyle = visibleInkColor(text.color); context.font = `${text.fontStyle ?? "normal"} ${text.fontWeight ?? 400} ${text.fontSize}px ${family}`;
   context.textBaseline = "alphabetic";
+  context.textAlign = text.textAlign ?? "left";
   const lines: string[] = [];
   for (const paragraph of text.text.split("\n")) {
     const words = paragraph.split(/\s+/).filter(Boolean); let line = "";
@@ -75,7 +90,8 @@ export function drawText(context: CanvasRenderingContext2D, text: TextElement, f
     lines.push(line);
   }
   const lineHeight = text.fontSize * 1.22;
-  for (const [index, line] of lines.entries()) context.fillText(line, text.x, text.baseline + index * lineHeight);
+  const anchorX = text.textAlign === "center" ? text.x + text.width / 2 : text.textAlign === "right" ? text.x + text.width : text.x;
+  for (const [index, line] of lines.entries()) context.fillText(line, anchorX, text.baseline + index * lineHeight);
   context.restore();
 }
 

@@ -1,3 +1,4 @@
+import { PageElement } from "../src/document";
 import { CanvasOperation, WhiteboardDocument, boardBounds, cloneBoard, connectionPoints, emptyBoard, estimateTextHeight, operationElement, scaleElement, translateElement, validBoard } from "./model";
 
 const STORAGE_KEY = "smooth-whiteboard-v1";
@@ -39,11 +40,11 @@ export class BoardStore extends EventTarget {
   }
 
   acceptAgentContribution(): void {
-    this.agentBefore = null; if (this.document.request) this.document.request.state = "answered"; this.changed();
+    this.agentBefore = null; if (this.document.request) { this.document.request.state = "answered"; this.document.request.ink = []; } this.changed();
   }
 
   undoAgentContribution(): boolean {
-    if (!this.agentBefore) return false; this.document = this.agentBefore; this.agentBefore = null; this.changed(); return true;
+    if (!this.agentBefore) return false; this.document = this.agentBefore; this.agentBefore = null; if (this.document.request) { this.document.request.state = "answered"; this.document.request.ink = []; } this.changed(); return true;
   }
 
   hasAgentContribution(): boolean { return this.agentBefore !== null; }
@@ -71,10 +72,18 @@ export class BoardStore extends EventTarget {
 
   applyOperation(operation: CanvasOperation, source: "human" | "agent"): string[] {
     const created: string[] = [];
-    if (operation.type === "create_text" || operation.type === "create_shape" || operation.type === "create_arrow" || operation.type === "create_stroke" || operation.type === "create_polygon") {
+    if (operation.type === "create_text" || operation.type === "create_highlight" || operation.type === "create_shape" || operation.type === "create_arrow" || operation.type === "create_stroke" || operation.type === "create_polygon") {
       const element = operationElement(operation);
       this.document.elements.push(element); created.push(element.id);
       if (source === "agent" && !this.document.agentElementIds.includes(element.id)) this.document.agentElementIds.push(element.id);
+    } else if (operation.type === "highlight_text") {
+      const wanted = new Set(this.expandGroupIds(operation.ids));
+      for (const text of this.document.elements.filter((element): element is Extract<PageElement, { type: "text" }> => element.type === "text" && wanted.has(element.id))) {
+        const padding = Math.max(0, operation.padding ?? 6); const height = (text.height ?? text.fontSize * 1.2) + padding * 2;
+        const highlight = operationElement({ type: "create_highlight", x: text.x - padding, y: text.baseline - text.fontSize + height / 2 - padding, width: text.width + padding * 2, size: height, color: operation.color ?? "#ffd84d", opacity: operation.opacity ?? 0.24 });
+        const textIndex = this.document.elements.findIndex((element) => element.id === text.id); this.document.elements.splice(Math.max(0, textIndex), 0, highlight); created.push(highlight.id);
+        if (source === "agent") this.document.agentElementIds.push(highlight.id);
+      }
     } else if (operation.type === "translate") {
       const expanded = this.expandGroupIds(operation.ids); this.elementsFor(expanded).forEach((element) => translateElement(element, operation.dx, operation.dy));
     } else if (operation.type === "resize") {
@@ -87,11 +96,18 @@ export class BoardStore extends EventTarget {
     } else if (operation.type === "update_style") {
       const expanded = this.expandGroupIds(operation.ids); for (const element of this.elementsFor(expanded)) {
         if (operation.color && "color" in element) element.color = operation.color;
+        if (element.type === "highlight" && operation.opacity !== undefined) element.opacity = Math.max(0, Math.min(1, operation.opacity));
         if (element.type === "stroke" || element.type === "shape") {
           if (operation.strokeWidth !== undefined) element.size = Math.max(0.5, Math.min(32, operation.strokeWidth));
-          if (element.type === "shape") { if (operation.fillColor) element.fillColor = operation.fillColor; if (operation.fillOpacity !== undefined) element.fillOpacity = Math.max(0, Math.min(1, operation.fillOpacity)); if (operation.radius !== undefined && element.kind === "rectangle") element.radius = Math.max(0, operation.radius); }
-        } else if (element.type === "text" && operation.fontSize !== undefined) {
-          element.fontSize = Math.max(10, Math.min(180, operation.fontSize)); element.height = estimateTextHeight(element.text, element.width, element.fontSize);
+          if (element.type === "shape") {
+            if (operation.fillColor) element.fillColor = operation.fillColor; if (operation.fillOpacity !== undefined) element.fillOpacity = Math.max(0, Math.min(1, operation.fillOpacity)); if (operation.radius !== undefined && element.kind === "rectangle") element.radius = Math.max(0, operation.radius);
+            if (operation.lineStyle) element.lineStyle = operation.lineStyle;
+            if (operation.arrowHeads && element.kind === "arrow") { element.startArrow = operation.arrowHeads === "start" || operation.arrowHeads === "both"; element.endArrow = operation.arrowHeads !== "start"; }
+          }
+        } else if (element.type === "text") {
+          if (operation.fontSize !== undefined) element.fontSize = Math.max(10, Math.min(180, operation.fontSize));
+          if (operation.fontFamily) element.fontFamily = operation.fontFamily; if (operation.fontWeight) element.fontWeight = operation.fontWeight; if (operation.fontStyle) element.fontStyle = operation.fontStyle; if (operation.textAlign) element.textAlign = operation.textAlign;
+          element.height = estimateTextHeight(element.text, element.width, element.fontSize);
         }
       }
     } else if (operation.type === "reorder") {

@@ -18,6 +18,11 @@ export interface TextElement {
   fontSize: number;
   color: string;
   text: string;
+  /** Curated, portable font roles used by both the human UI and WebMCP agent. */
+  fontFamily?: "sans" | "serif" | "mono" | "handwriting";
+  fontWeight?: 400 | 500 | 600 | 700;
+  fontStyle?: "normal" | "italic";
+  textAlign?: "left" | "center" | "right";
 }
 
 export interface HighlightElement {
@@ -43,6 +48,9 @@ export interface ShapeElement {
   fillOpacity?: number;
   /** Optional editable corner radius for rectangular UI and diagram shapes. */
   radius?: number;
+  lineStyle?: "solid" | "dashed" | "dotted";
+  startArrow?: boolean;
+  endArrow?: boolean;
 }
 
 export interface ImageElement {

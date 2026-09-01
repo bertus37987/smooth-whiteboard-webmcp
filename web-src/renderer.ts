@@ -9,6 +9,7 @@ export class BoardRenderer {
   readonly camera: Camera = { x: window.innerWidth / 2, y: window.innerHeight / 2, zoom: 1 };
   selectionIds = new Set<string>();
   lasso: InkPoint[] = [];
+  instructionInk: InkPoint[][] = [];
   activeAgentIds = new Set<string>();
   private frame = 0;
   private resizeObserver: ResizeObserver;
@@ -87,13 +88,25 @@ export class BoardRenderer {
       } else drawBoardElement(context, element);
       if (this.activeAgentIds.has(element.id)) this.drawAgentHalo(context, element);
     }
-    this.drawSelection(context); this.drawLasso(context); context.restore();
+    this.drawInstructionInk(context); this.drawSelection(context); this.drawLasso(context); context.restore();
+  }
+
+  private drawInstructionInk(context: CanvasRenderingContext2D): void {
+    if (!this.instructionInk.length) return; context.save(); context.strokeStyle = "#2457e6"; context.fillStyle = "#2457e6"; context.lineWidth = 5 / this.camera.zoom; context.lineCap = "round"; context.lineJoin = "round"; context.shadowColor = "rgba(36,87,230,.72)"; context.shadowBlur = 15 / this.camera.zoom;
+    for (const stroke of this.instructionInk) {
+      if (!stroke.length) continue;
+      if (stroke.length === 1) { context.beginPath(); context.arc(stroke[0].x, stroke[0].y, 2.5 / this.camera.zoom, 0, Math.PI * 2); context.fill(); continue; }
+      context.beginPath(); context.moveTo(stroke[0].x, stroke[0].y); for (const point of stroke.slice(1)) context.lineTo(point.x, point.y); context.stroke();
+    }
+    context.restore();
   }
 
   private drawAgentHalo(context: CanvasRenderingContext2D, element: PageElement): void {
     const box = elementBounds(element); const pad = 8 / this.camera.zoom;
-    context.save(); context.strokeStyle = "#808080"; context.globalAlpha = 0.7; context.lineWidth = 2 / this.camera.zoom;
-    context.setLineDash([6 / this.camera.zoom, 5 / this.camera.zoom]); context.strokeRect(box.minX - pad, box.minY - pad, box.maxX - box.minX + pad * 2, box.maxY - box.minY + pad * 2); context.restore();
+    context.save(); context.strokeStyle = "#e32636"; context.fillStyle = "#e32636"; context.globalAlpha = 0.88; context.lineWidth = 2 / this.camera.zoom;
+    context.shadowColor = "rgba(227,38,54,.78)"; context.shadowBlur = 13 / this.camera.zoom; context.setLineDash([6 / this.camera.zoom, 5 / this.camera.zoom]);
+    context.strokeRect(box.minX - pad, box.minY - pad, box.maxX - box.minX + pad * 2, box.maxY - box.minY + pad * 2); context.setLineDash([]);
+    context.beginPath(); context.arc(box.maxX + pad, box.minY - pad, 4 / this.camera.zoom, 0, Math.PI * 2); context.fill(); context.restore();
   }
 
   private drawConnectionLabel(context: CanvasRenderingContext2D, element: Extract<PageElement, { type: "text" }>): void {

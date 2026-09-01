@@ -22,26 +22,28 @@ export async function registerWhiteboardTools(host: WebMcpHost, signal: AbortSig
   await context.registerTool({
     name: "inspect_whiteboard",
     title: "Inspect shared whiteboard",
-    description: "Read the latest whiteboard state, the human's current lasso selection, and any pending instruction. Always inspect immediately before editing so human changes remain the source of truth.",
+    description: "Read the latest whiteboard state, the human's current lasso selection, and any pending instruction. Pending request ink contains the non-permanent blue AI-Pen strokes in world coordinates. Always inspect immediately before editing so human changes remain the source of truth.",
     inputSchema: { type: "object", properties: { scope: { type: "string", enum: ["all", "selection"], description: "Read the entire board or the active/pending selection." } } },
     execute: (input) => result(host.inspect(input.scope === "selection" ? "selection" : "all"))
   }, { signal });
   await context.registerTool({
     name: "apply_whiteboard_changes",
     title: "Edit shared whiteboard",
-    description: "Precisely edit the live board with ordinary editable objects. Supports text rewriting/shortening, custom strokes and polygons, point editing, shapes, arrows, smart connections, moving, resizing, styling, grouping, duplication, alignment, distribution, layers and deletion. Inspect first and use the latest revision.",
+    description: "Precisely edit the live board with ordinary editable objects. Supports styled text, rewriting/shortening, text highlighting, colors, filled shapes, rounded corners, solid/dashed/dotted lines, one- or two-headed arrows, custom strokes and polygons, point editing, smart connections, moving, resizing, grouping, duplication, alignment, distribution, layers and deletion. Inspect first and use the latest revision.",
     inputSchema: {
       type: "object", required: ["operations"], properties: {
         baseRevision: { type: "number", description: "Revision returned by the latest inspection. A stale revision is rejected to protect newer human edits." },
         operations: { type: "array", minItems: 1, maxItems: 120, items: {
           type: "object", required: ["type"], properties: {
-            type: { type: "string", enum: ["create_text", "create_shape", "create_arrow", "create_stroke", "create_polygon", "translate", "resize", "update_text", "update_points", "update_style", "reorder", "connect", "align", "distribute", "duplicate", "group", "ungroup", "delete"] },
+            type: { type: "string", enum: ["create_text", "create_highlight", "highlight_text", "create_shape", "create_arrow", "create_stroke", "create_polygon", "translate", "resize", "update_text", "update_points", "update_style", "reorder", "connect", "align", "distribute", "duplicate", "group", "ungroup", "delete"] },
             id: { type: "string" }, ids: { type: "array", items: { type: "string" } },
             groupId: { type: "string" },
             x: { type: "number" }, y: { type: "number" }, width: { type: "number" }, height: { type: "number" },
             dx: { type: "number" }, dy: { type: "number" }, text: { type: "string" }, fontSize: { type: "number" },
+            fontFamily: { type: "string", enum: ["sans", "serif", "mono", "handwriting"] }, fontWeight: { type: "number", enum: [400, 500, 600, 700] }, fontStyle: { type: "string", enum: ["normal", "italic"] }, textAlign: { type: "string", enum: ["left", "center", "right"] },
             kind: { type: "string", enum: ["rectangle", "ellipse"] }, filled: { type: "boolean" }, closed: { type: "boolean" }, size: { type: "number" },
-            color: { type: "string" }, strokeWidth: { type: "number" }, fillColor: { type: "string" }, fillOpacity: { type: "number" }, radius: { type: "number" },
+            color: { type: "string" }, strokeWidth: { type: "number" }, fillColor: { type: "string" }, fillOpacity: { type: "number" }, radius: { type: "number" }, opacity: { type: "number" }, padding: { type: "number" },
+            lineStyle: { type: "string", enum: ["solid", "dashed", "dotted"] }, arrowHeads: { type: "string", enum: ["end", "start", "both"] },
             direction: { type: "string", enum: ["front", "back"] }, fromId: { type: "string" }, toId: { type: "string" }, label: { type: "string" },
             alignment: { type: "string", enum: ["left", "center-x", "right", "top", "center-y", "bottom"] }, axis: { type: "string", enum: ["horizontal", "vertical"] }, gap: { type: "number" },
             from: { type: "object", properties: { x: { type: "number" }, y: { type: "number" } }, required: ["x", "y"] },

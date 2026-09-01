@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#ffffff">
   <meta name="description" content="Ein gemeinsames, unendliches Whiteboard für Mensch und Browser-Agent.">
   <title>Shared Whiteboard</title>
-  <link rel="stylesheet" href="./app.css?v=0.10.0">
+  <link rel="stylesheet" href="./app.css?v=0.11.0">
 </head>
 <body>
   <main class="workspace" aria-label="Gemeinsames unendliches Whiteboard">
@@ -14,6 +14,7 @@
     <nav class="toolbar" aria-label="Whiteboard-Werkzeuge">
       <div class="tool-group">
         <button type="button" data-tool="pen" aria-label="Freihand" title="Freihand · P"></button>
+        <button type="button" data-tool="ai-pen" aria-label="AI Pen" title="AI Pen · I"></button>
         <button type="button" data-tool="eraser" aria-label="Radierer" title="Radierer · E"></button>
         <button type="button" data-tool="select" aria-label="Auswählen" title="Auswählen · V"></button>
         <button type="button" data-tool="hand" aria-label="Verschieben" title="Verschieben · H"></button>
@@ -71,8 +72,9 @@
     </section>
 
     <div class="activity" role="status" aria-live="polite"><span id="status"></span></div>
+    <div id="agent-marker-tip" class="agent-marker-tip" role="tooltip" hidden><span></span>Agenten-Markierung · neuer Beitrag</div>
     <input id="image-input" type="file" accept="image/png,image/jpeg" hidden>
   </main>
-  <script type="module" src="./app.js?v=0.10.0"></script>
+  <script type="module" src="./app.js?v=0.11.0"></script>
 </body>
 </html>

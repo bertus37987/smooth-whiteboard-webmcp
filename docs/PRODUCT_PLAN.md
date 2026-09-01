@@ -6,8 +6,8 @@ Smooth Whiteboard is a pen-first shared visual workspace. The human and a browse
 
 ## Interaction model
 
-1. The human draws, writes or imports an image.
-2. The thin command bar targets either the whole canvas or the current lasso/selection.
+1. The human draws, writes or imports an image. A separate blue AI Pen can add temporary spatial instructions without changing the artifact.
+2. The thin command bar targets the whole canvas, the current lasso/selection, the AI-Pen overlay or a combination.
 3. The agent inspects the latest revision before every change.
 4. The agent either edits precise existing objects or composes a structured visual.
 5. Changes appear progressively on the live canvas.
@@ -18,8 +18,8 @@ Smooth Whiteboard is a pen-first shared visual workspace. The human and a browse
 
 The WebMCP API intentionally stays small while covering the complete visual workflow:
 
-- `inspect_whiteboard`: reads the current revision, viewport, selection, instruction, groups and editable object geometry.
-- `apply_whiteboard_changes`: low-level precision editing for text, strokes, shapes, arrows, smart connectors, movement, resizing, styling, grouping, duplication, alignment, distribution, layers and deletion.
+- `inspect_whiteboard`: reads the current revision, viewport, selection, instruction, transient AI-Pen coordinates, groups and editable object geometry.
+- `apply_whiteboard_changes`: low-level precision editing for styled text, text highlights, colors, strokes, filled shapes, arrows, smart connectors, movement, resizing, styling, grouping, duplication, alignment, distribution, layers and deletion.
 - `create_structured_visual`: high-level composition for UI wireframes, flowcharts, mindmaps, research briefs, calculation steps and plotted graphs. It compiles to normal low-level canvas objects.
 - `complete_whiteboard_contribution`: ends a progressive contribution and exposes the human Accept/Undo decision.
 
@@ -58,7 +58,14 @@ This split lets the agent create custom drawings through points and strokes with
 - structured visual composer and broader WebMCP schema
 - browser and schema regression tests
 
-### 0.11 — professional canvas controls
+### 0.11 — spatial agent collaboration
+
+- blue glowing, non-permanent AI-Pen instruction layer
+- sticky tools: pen, AI Pen, shapes, image and lasso remain active until the human explicitly changes tools
+- red glowing Agenten-Markierung for every created or touched object, with an explanatory hover label
+- font roles, weight, italic, alignment, text marking, filled shapes, rounded corners, line styles and bidirectional arrows for WebMCP
+
+### 0.12 — professional canvas controls
 
 - snapping guides, equal-spacing hints and keyboard nudging
 - stroke-width/fill/opacity inspector

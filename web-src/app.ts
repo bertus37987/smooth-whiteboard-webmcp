@@ -10,6 +10,7 @@ import { registerWhiteboardTools } from "./webmcp";
 const icons: Record<string, string> = {
   select: '<path d="M5 3l14 9-7 2-3 7z"/><path d="M13 14l5 5"/>', hand: '<path d="M8 11V7a2 2 0 014 0v3-5a2 2 0 014 0v5-3a2 2 0 014 0v4-2a2 2 0 014 0v5c0 5-3 7-7 7h-1c-3 0-5-2-7-5l-2-3a2 2 0 013-2l2 2"/>',
   pen: '<path d="M4 20l4-1 11-11-3-3L5 16z"/><path d="M14 7l3 3"/>', rectangle: '<rect x="4" y="5" width="16" height="14" rx="1"/>', ellipse: '<ellipse cx="12" cy="12" rx="8" ry="6"/>', arrow: '<path d="M4 12h15M14 7l5 5-5 5"/>',
+  "ai-pen": '<path d="M4 20l4-1 10-10-3-3L5 16z"/><path d="M18 3v4M16 5h4M20 11v3M18.5 12.5h3"/>',
   text: '<path d="M5 6V4h14v2M12 4v16M8 20h8"/>', image: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8" cy="9" r="1.5"/><path d="M4 17l5-5 4 4 2-2 5 4"/>', lasso: '<path d="M19 8c0-3-3-5-7-5S4 5 4 9s4 6 9 6c4 0 7-2 7-5M13 15c0 4-2 6-5 6-2 0-3-1-3-2s1-2 3-2c2 0 4 2 5 4"/>',
   eraser: '<path d="M7 19h12M4 14l8-9a2 2 0 013 0l4 4a2 2 0 010 3l-7 7H8l-4-3a2 2 0 010-2z"/>', undo: '<path d="M9 7l-5 5 5 5"/><path d="M5 12h8a6 6 0 016 6"/>', redo: '<path d="M15 7l5 5-5 5"/><path d="M19 12h-8a6 6 0 00-6 6"/>',
   fit: '<path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/>', trash: '<path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"/>', check: '<path d="M5 12l4 4 10-10"/>', close: '<path d="M6 6l12 12M18 6L6 18"/>',
@@ -20,13 +21,20 @@ const icons: Record<string, string> = {
 function icon(name: string): string { return `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${icons[name]}</svg>`; }
 function uuid(prefix: string): string { return `${prefix}-${crypto.randomUUID()}`; }
 function byId<T extends HTMLElement>(id: string): T { const element = document.getElementById(id); if (!element) throw new Error(`Missing ${id}`); return element as T; }
+function operationTargetIds(operation: CanvasOperation): string[] {
+  if ("ids" in operation && Array.isArray(operation.ids)) return operation.ids;
+  if (["resize", "update_text", "update_points"].includes(operation.type) && "id" in operation && typeof operation.id === "string") return [operation.id];
+  if (operation.type === "connect") return [operation.fromId, operation.toId];
+  return [];
+}
 
 interface Interaction {
-  mode: "pan" | "draw" | "shape" | "lasso" | "move" | "resize" | "erase";
+  mode: "pan" | "draw" | "instruction" | "shape" | "lasso" | "move" | "resize" | "erase";
   pointerId: number; startClient: { x: number; y: number }; startWorld: InkPoint; elementId?: string;
   before?: Map<string, PageElement>; beforeBounds?: { minX: number; minY: number; maxX: number; maxY: number }; checkpointed?: boolean;
   additive?: boolean;
   handle?: SelectionHandle;
+  instructionIndex?: number;
 }
 
 export class WhiteboardApp {
@@ -41,10 +49,12 @@ export class WhiteboardApp {
   private readonly requestForm = byId<HTMLFormElement>("agent-form");
   private readonly instruction = byId<HTMLInputElement>("instruction");
   private readonly review = byId<HTMLDivElement>("review");
+  private readonly agentMarkerTip = byId<HTMLDivElement>("agent-marker-tip");
   private readonly imageInput = byId<HTMLInputElement>("image-input");
   private readonly abort = new AbortController();
 
   constructor() {
+    this.renderer.instructionInk = structuredClone(this.store.document.request?.ink ?? []);
     this.bindToolbar(); this.bindSelectionTools(); this.bindCanvas(); this.bindKeyboard(); this.bindCollaboration(); this.bindFiles();
     this.store.addEventListener("change", () => { this.renderer.request(); this.updateUi(); });
     this.renderer.request(); this.updateUi();
@@ -54,7 +64,7 @@ export class WhiteboardApp {
   }
 
   private bindToolbar(): void {
-    document.querySelectorAll<HTMLButtonElement>("[data-tool]").forEach((button) => {
+    document.querySelectorAll<HTMLButtonElement>("button[data-tool]").forEach((button) => {
       const tool = button.dataset.tool as BoardTool; button.innerHTML = icon(tool); button.addEventListener("click", () => this.setTool(tool));
     });
     for (const [id, name, action] of [
@@ -70,7 +80,7 @@ export class WhiteboardApp {
 
   private setTool(tool: BoardTool): void {
     this.tool = tool; this.canvas.dataset.tool = tool; this.canvas.style.cursor = "";
-    document.querySelectorAll<HTMLButtonElement>("[data-tool]").forEach((button) => button.classList.toggle("is-active", button.dataset.tool === tool));
+    document.querySelectorAll<HTMLButtonElement>("button[data-tool]").forEach((button) => button.classList.toggle("is-active", button.dataset.tool === tool));
   }
 
   private bindSelectionTools(): void {
@@ -88,6 +98,7 @@ export class WhiteboardApp {
     this.canvas.addEventListener("pointermove", (event) => this.pointerMove(event));
     this.canvas.addEventListener("pointerup", (event) => this.pointerUp(event));
     this.canvas.addEventListener("pointercancel", (event) => this.pointerUp(event));
+    this.canvas.addEventListener("pointerleave", () => { this.agentMarkerTip.hidden = true; });
     this.canvas.addEventListener("wheel", (event) => { event.preventDefault(); this.renderer.zoomAt(event.clientX, event.clientY, Math.exp(-event.deltaY * 0.0012)); this.updateZoom(); this.updateContextPrompt(); }, { passive: false });
     this.canvas.addEventListener("dblclick", (event) => {
       if (this.tool !== "select") return; const point = this.renderer.world(event.clientX, event.clientY); const hit = this.renderer.hit(point);
@@ -103,6 +114,9 @@ export class WhiteboardApp {
     if (this.tool === "pen") {
       this.store.checkpoint(); const stroke: StrokeElement = { type: "stroke", id: uuid("stroke"), color: this.penColor, size: 3, pressureSensitivity: 0.7, points: [{ ...point, pressure: event.pressure || 0.5, time: event.timeStamp }] };
       this.store.document.elements.push(stroke); this.interaction = { mode: "draw", pointerId: event.pointerId, startClient: { x: event.clientX, y: event.clientY }, startWorld: point, elementId: stroke.id }; this.renderer.request(); return;
+    }
+    if (this.tool === "ai-pen") {
+      const stroke = [{ ...point, pressure: event.pressure || 0.5, time: event.timeStamp }]; this.renderer.instructionInk.push(stroke); this.interaction = { mode: "instruction", pointerId: event.pointerId, startClient: { x: event.clientX, y: event.clientY }, startWorld: point, instructionIndex: this.renderer.instructionInk.length - 1 }; this.updateContextPrompt(); this.renderer.request(); return;
     }
     if (this.tool === "rectangle" || this.tool === "ellipse" || this.tool === "arrow") {
       this.store.checkpoint(); const shape: ShapeElement = { type: "shape", id: uuid("shape"), kind: this.tool, points: [point, { ...point }], color: this.penColor, size: 3, closed: this.tool !== "arrow", fillColor: "#c0c0c0", fillOpacity: 0, radius: this.tool === "rectangle" ? 14 : undefined };
@@ -131,13 +145,16 @@ export class WhiteboardApp {
 
   private pointerMove(event: PointerEvent): void {
     const interaction = this.interaction;
-    if (!interaction) { if (this.tool === "select") this.canvas.style.cursor = this.resizeCursor(this.renderer.selectionHandleAt(this.renderer.world(event.clientX, event.clientY))); return; }
+    if (!interaction) { this.updateAgentMarkerHover(event); if (this.tool === "select") this.canvas.style.cursor = this.resizeCursor(this.renderer.selectionHandleAt(this.renderer.world(event.clientX, event.clientY))); return; }
     if (interaction.pointerId !== event.pointerId) return; event.preventDefault();
     const point = this.renderer.world(event.clientX, event.clientY);
     if (interaction.mode === "pan") { this.renderer.camera.x += event.clientX - interaction.startClient.x; this.renderer.camera.y += event.clientY - interaction.startClient.y; interaction.startClient = { x: event.clientX, y: event.clientY }; this.updateContextPrompt(); this.renderer.request(); return; }
     if (interaction.mode === "draw") {
       const stroke = this.store.document.elements.find((element): element is StrokeElement => element.id === interaction.elementId && element.type === "stroke"); if (!stroke) return;
       const samples = event.getCoalescedEvents?.() ?? [event]; for (const sample of samples) { const candidate = this.renderer.world(sample.clientX, sample.clientY); candidate.pressure = sample.pressure || 0.5; candidate.time = sample.timeStamp; stroke.points.push(candidate); } this.renderer.request(); return;
+    }
+    if (interaction.mode === "instruction") {
+      const stroke = this.renderer.instructionInk[interaction.instructionIndex ?? -1]; if (!stroke) return; const samples = event.getCoalescedEvents?.() ?? [event]; for (const sample of samples) { const candidate = this.renderer.world(sample.clientX, sample.clientY); candidate.pressure = sample.pressure || 0.5; candidate.time = sample.timeStamp; stroke.push(candidate); } this.renderer.request(); return;
     }
     if (interaction.mode === "shape") { const shape = this.store.document.elements.find((element): element is ShapeElement => element.id === interaction.elementId && element.type === "shape"); if (shape) { shape.points[1] = point; this.renderer.request(); } return; }
     if (interaction.mode === "lasso") { this.renderer.lasso.push(point); this.renderer.request(); return; }
@@ -159,7 +176,7 @@ export class WhiteboardApp {
     if (interaction.mode === "lasso") {
       const hits = this.store.expandGroupIds(lassoElements(this.store.document.elements, this.renderer.lasso));
       this.renderer.selectionIds = interaction.additive ? new Set([...this.renderer.selectionIds, ...hits]) : new Set(hits);
-      this.renderer.lasso = []; this.setTool("select"); this.updateContextPrompt(); this.renderer.request();
+      this.renderer.lasso = []; this.updateContextPrompt(); this.renderer.request();
     } else if (interaction.mode === "draw") {
       const strokeIndex = this.store.document.elements.findIndex((element) => element.id === interaction.elementId);
       const stroke = this.store.document.elements[strokeIndex];
@@ -168,7 +185,8 @@ export class WhiteboardApp {
         if (optimized.kind) this.store.document.elements[strokeIndex] = { type: "shape", id: stroke.id, kind: optimized.kind, points: optimized.stroke.points, color: stroke.color, size: stroke.size, closed: optimized.kind !== "line" && optimized.kind !== "arrow", fillColor: "#c0c0c0", fillOpacity: 0 };
       }
       this.store.changed();
-    } else if (interaction.mode === "shape" || interaction.mode === "erase" || interaction.checkpointed) this.store.changed();
+    } else if (interaction.mode === "instruction") this.updateContextPrompt();
+    else if (interaction.mode === "shape" || interaction.mode === "erase" || interaction.checkpointed) this.store.changed();
     this.interaction = null; this.release(event);
   }
 
@@ -204,7 +222,7 @@ export class WhiteboardApp {
       if (event.code === "Space") { event.preventDefault(); this.spaceDown = true; this.canvas.classList.add("is-panning"); }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") { event.preventDefault(); event.shiftKey ? this.store.redo() : this.store.undo(); }
       if ((event.key === "Delete" || event.key === "Backspace") && this.renderer.selectionIds.size) { event.preventDefault(); this.deleteSelection(); }
-      const shortcuts: Partial<Record<string, BoardTool>> = { v: "select", h: "hand", p: "pen", r: "rectangle", o: "ellipse", a: "arrow", t: "text", l: "lasso", e: "eraser" };
+      const shortcuts: Partial<Record<string, BoardTool>> = { v: "select", h: "hand", p: "pen", i: "ai-pen", r: "rectangle", o: "ellipse", a: "arrow", t: "text", l: "lasso", e: "eraser" };
       const shortcut = shortcuts[event.key.toLowerCase()]; if (shortcut && !event.ctrlKey && !event.metaKey) this.setTool(shortcut);
     });
     window.addEventListener("keyup", (event) => { if (event.code === "Space") { this.spaceDown = false; this.canvas.classList.remove("is-panning"); } });
@@ -213,18 +231,18 @@ export class WhiteboardApp {
   private bindCollaboration(): void {
     byId<HTMLButtonElement>("accept").innerHTML = `${icon("check")}<span>Accept</span>`; byId<HTMLButtonElement>("undo-agent").innerHTML = `${icon("close")}<span>Undo</span>`;
     byId<HTMLButtonElement>("send").innerHTML = icon("send"); byId<HTMLButtonElement>("clear-context").innerHTML = icon("close");
-    this.requestForm.addEventListener("submit", (event) => { event.preventDefault(); const instruction = this.instruction.value.trim(); if (!instruction) return;
-      this.store.checkpoint(); this.store.document.request = { id: uuid("request"), instruction, selectionIds: [...this.renderer.selectionIds], createdAt: new Date().toISOString(), state: "ready" }; this.store.changed(); this.instruction.value = ""; this.updateContextPrompt(); this.setStatus(this.renderer.selectionIds.size ? "Auswahl-Anweisung ist für den Agenten bereit" : "Canvas-Anweisung ist für den Agenten bereit", 2600); });
-    byId<HTMLButtonElement>("clear-context").addEventListener("click", () => { this.renderer.selectionIds.clear(); this.updateContextPrompt(); this.renderer.request(); });
-    byId<HTMLButtonElement>("accept").addEventListener("click", () => { this.store.acceptAgentContribution(); this.renderer.activeAgentIds.clear(); this.setStatus("Agentenbeitrag übernommen", 1800); });
-    byId<HTMLButtonElement>("undo-agent").addEventListener("click", () => { if (this.store.undoAgentContribution()) { this.renderer.activeAgentIds.clear(); this.setStatus("Agentenbeitrag zurückgenommen", 1800); } });
+    this.requestForm.addEventListener("submit", (event) => { event.preventDefault(); const instruction = this.instruction.value.trim(); const ink = structuredClone(this.renderer.instructionInk); if (!instruction && !ink.length) return;
+      this.store.checkpoint(); this.store.document.request = { id: uuid("request"), instruction: instruction || "Nutze die blaue AI-Pen-Markierung als visuelle Anweisung.", selectionIds: [...this.renderer.selectionIds], ink, createdAt: new Date().toISOString(), state: "ready" }; this.store.changed(); this.instruction.value = ""; this.updateContextPrompt(); this.setStatus(ink.length ? "AI-Pen-Anweisung ist für den Agenten bereit" : this.renderer.selectionIds.size ? "Auswahl-Anweisung ist für den Agenten bereit" : "Canvas-Anweisung ist für den Agenten bereit", 2600); });
+    byId<HTMLButtonElement>("clear-context").addEventListener("click", () => { this.renderer.selectionIds.clear(); this.renderer.instructionInk = []; this.updateContextPrompt(); this.renderer.request(); });
+    byId<HTMLButtonElement>("accept").addEventListener("click", () => { this.store.acceptAgentContribution(); this.renderer.activeAgentIds.clear(); this.renderer.instructionInk = []; this.agentMarkerTip.hidden = true; this.setStatus("Agentenbeitrag übernommen", 1800); });
+    byId<HTMLButtonElement>("undo-agent").addEventListener("click", () => { if (this.store.undoAgentContribution()) { this.renderer.activeAgentIds.clear(); this.renderer.instructionInk = []; this.agentMarkerTip.hidden = true; this.setStatus("Agentenbeitrag zurückgenommen", 1800); } });
   }
 
   private bindFiles(): void {
     this.imageInput.addEventListener("change", () => { const file = this.imageInput.files?.[0]; this.imageInput.value = ""; if (!file) return;
       const reader = new FileReader(); reader.onload = () => { const dataUrl = String(reader.result); const image = new Image(); image.onload = () => { const centre = this.renderer.world(this.canvas.clientWidth / 2, this.canvas.clientHeight / 2); const scale = Math.min(1, 560 / image.naturalWidth);
         const element: ImageElement = { type: "image", id: uuid("image"), x: centre.x - image.naturalWidth * scale / 2, y: centre.y - image.naturalHeight * scale / 2, width: image.naturalWidth * scale, height: image.naturalHeight * scale, dataUrl, mimeType: file.type === "image/png" ? "image/png" : "image/jpeg", sourceName: file.name };
-        this.store.checkpoint(); this.store.document.elements.push(element); this.store.changed(); this.setTool("select"); }; image.src = dataUrl; }; reader.readAsDataURL(file);
+        this.store.checkpoint(); this.store.document.elements.push(element); this.store.changed(); }; image.src = dataUrl; }; reader.readAsDataURL(file);
     });
     byId<HTMLButtonElement>("export-json").addEventListener("click", () => { const blob = new Blob([JSON.stringify(this.store.document, null, 2)], { type: "application/json" }); const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = "shared-whiteboard.json"; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000); });
     const importInput = byId<HTMLInputElement>("import-json"); importInput.addEventListener("change", () => { const file = importInput.files?.[0]; importInput.value = ""; if (!file) return; void file.text().then((text) => { const parsed = JSON.parse(text) as unknown; if (!validBoard(parsed)) throw new Error("Ungültiges Whiteboard"); this.store.checkpoint(); this.store.replace(parsed); this.renderer.fitAll(); }).catch(() => this.setStatus("Datei konnte nicht geöffnet werden", 2200)); });
@@ -240,10 +258,10 @@ export class WhiteboardApp {
     if (!Array.isArray(operations) || operations.length === 0) return { ok: false, error: "No operations supplied" };
     if (operations.length > maxOperations || operations.some((operation) => !isCanvasOperation(operation))) return { ok: false, error: "invalid_operations", instruction: `Use the operation schema exactly, keep coordinates finite, and stay below ${maxOperations} operations.` };
     if (baseRevision !== undefined && baseRevision !== this.store.document.revision) return { ok: false, error: "stale_revision", currentRevision: this.store.document.revision, instruction: "Inspect the whiteboard again before editing." };
-    const createsElement = new Set(["create_text", "create_shape", "create_arrow", "create_stroke", "create_polygon", "connect"]); const explicitIds = operations.filter((operation) => createsElement.has(operation.type) && "id" in operation && typeof operation.id === "string").map((operation) => (operation as { id: string }).id); const existing = new Set(this.store.document.elements.map((element) => element.id));
+    const createsElement = new Set(["create_text", "create_highlight", "create_shape", "create_arrow", "create_stroke", "create_polygon", "connect"]); const explicitIds = operations.filter((operation) => createsElement.has(operation.type) && "id" in operation && typeof operation.id === "string").map((operation) => (operation as { id: string }).id); const existing = new Set(this.store.document.elements.map((element) => element.id));
     if (new Set(explicitIds).size !== explicitIds.length || explicitIds.some((id) => existing.has(id))) return { ok: false, error: "id_conflict", instruction: "Use unique IDs that are not already present on the board; inspect again if needed." };
     this.store.beginAgentContribution(); this.updateUi(); this.setStatus("Agent arbeitet auf dem Canvas …"); const created: string[] = [];
-    for (const operation of operations.slice(0, maxOperations)) { const ids = this.store.applyOperation(operation, "agent"); created.push(...ids); this.renderer.activeAgentIds = new Set([...this.renderer.activeAgentIds, ...ids]); this.store.changed(); await new Promise((resolve) => setTimeout(resolve, delay)); }
+    for (const operation of operations.slice(0, maxOperations)) { const targetIds = this.store.expandGroupIds(operationTargetIds(operation)); const ids = this.store.applyOperation(operation, "agent"); created.push(...ids); this.renderer.activeAgentIds = new Set([...this.renderer.activeAgentIds, ...ids, ...targetIds]); this.store.changed(); await new Promise((resolve) => setTimeout(resolve, delay)); }
     return { ok: true, revision: this.store.document.revision, createdIds: created, message: "Changes are visible and remain fully editable. Call complete_whiteboard_contribution when finished." };
   }
 
@@ -254,7 +272,7 @@ export class WhiteboardApp {
   }
 
   private completeAgent(summary: string): Record<string, unknown> {
-    if (this.store.document.request) this.store.document.request.state = "answered"; this.store.changed(); this.setStatus(summary, 4000); return { ok: true, revision: this.store.document.revision, awaitingHumanDecision: true };
+    if (this.store.document.request) { this.store.document.request.state = "answered"; this.store.document.request.ink = []; } this.renderer.instructionInk = []; this.renderer.request(); this.store.changed(); this.setStatus(summary, 4000); return { ok: true, revision: this.store.document.revision, awaitingHumanDecision: true };
   }
 
   private clearBoard(): void { if (this.store.document.elements.length === 0 || !window.confirm("Gesamtes Whiteboard leeren?")) return; this.renderer.selectionIds.clear(); this.store.clear(); }
@@ -276,11 +294,17 @@ export class WhiteboardApp {
   private updateZoom(): void { byId<HTMLSpanElement>("zoom").textContent = `${Math.round(this.renderer.camera.zoom * 100)}%`; }
   private updateContextPrompt(): void {
     const tools = byId<HTMLElement>("selection-tools"); const bounds = this.renderer.selectionBounds(); tools.hidden = !bounds;
-    const count = this.store.selectionUnitCount([...this.renderer.selectionIds]); byId<HTMLElement>("request-scope").textContent = count ? `${count} ausgewählt` : "Canvas"; byId<HTMLButtonElement>("clear-context").hidden = count === 0;
+    const count = this.store.selectionUnitCount([...this.renderer.selectionIds]); const ink = this.renderer.instructionInk.length; byId<HTMLElement>("request-scope").textContent = ink && count ? `AI-Pen + ${count}` : ink ? "AI-Pen" : count ? `${count} ausgewählt` : "Canvas"; byId<HTMLButtonElement>("clear-context").hidden = count === 0 && ink === 0;
     if (!bounds) return;
     const top = this.renderer.screen({ x: (bounds.minX + bounds.maxX) / 2, y: bounds.minY });
     tools.style.left = `${Math.max(170, Math.min(window.innerWidth - 170, top.x))}px`; tools.style.top = `${Math.max(72, top.y - 54)}px`;
     tools.classList.toggle("has-text", this.selectedElements().some((element) => element.type === "text"));
+  }
+
+  private updateAgentMarkerHover(event: PointerEvent): void {
+    const hit = this.renderer.hit(this.renderer.world(event.clientX, event.clientY), 12);
+    if (!hit || !this.renderer.activeAgentIds.has(hit.id)) { this.agentMarkerTip.hidden = true; return; }
+    this.agentMarkerTip.hidden = false; this.agentMarkerTip.style.left = `${Math.min(window.innerWidth - 190, event.clientX + 16)}px`; this.agentMarkerTip.style.top = `${Math.max(76, event.clientY - 18)}px`;
   }
 }
 

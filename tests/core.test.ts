@@ -74,6 +74,9 @@ assert.deepEqual([connected.from.x, connected.to.x], [180, 300], "agent connecti
 assert.ok(estimateTextHeight("eine längere mehrzeilige Textbox", 120, 24) > 24 * 1.2, "custom text boxes derive multiple visual lines from their width");
 assert.equal(isCanvasOperation({ type: "connect", fromId: "a", toId: "b" }), true);
 assert.equal(isCanvasOperation({ type: "translate", ids: ["a"], dx: Number.NaN, dy: 2 }), false, "invalid agent geometry is rejected before it reaches the board");
+assert.equal(isCanvasOperation({ type: "create_text", x: 0, y: 0, text: "Titel", fontFamily: "serif", fontWeight: 700, textAlign: "center" }), true, "agent text exposes curated typography without arbitrary font loading");
+assert.equal(isCanvasOperation({ type: "create_arrow", from: point(0, 0), to: point(100, 0), arrowHeads: "both", lineStyle: "dashed" }), true, "agent arrows support direction and line styling");
+assert.equal(isCanvasOperation({ type: "update_style", ids: ["title"], fontFamily: "comic-sans" }), false, "unsupported font roles are rejected at the WebMCP boundary");
 
 const storedBoards = new Map<string, string>();
 Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
@@ -81,6 +84,10 @@ Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
   setItem: (key: string, value: string) => storedBoards.set(key, value)
 } });
 const connectedStore = new BoardStore();
+connectedStore.document.request = { id: "ink-request", instruction: "Dort ergänzen", selectionIds: [], createdAt: new Date(0).toISOString(), state: "ready", ink: [[point(10, 10), point(40, 40)]] };
+assert.equal(connectedStore.document.elements.length, 0, "AI-Pen ink is request context and never a permanent canvas element");
+connectedStore.acceptAgentContribution();
+assert.deepEqual(connectedStore.document.request?.ink, [], "accepting an agent contribution clears the transient AI-Pen overlay");
 connectedStore.applyOperation({ type: "create_shape", id: "source", kind: "rectangle", x: 0, y: 0, width: 100, height: 80 }, "agent");
 connectedStore.applyOperation({ type: "create_shape", id: "target", kind: "ellipse", x: 300, y: 0, width: 100, height: 80 }, "agent");
 connectedStore.applyOperation({ type: "connect", id: "link", fromId: "source", toId: "target", label: "dynamic" }, "agent");
@@ -95,6 +102,14 @@ connectedStore.applyOperation({ type: "delete", ids: ["target"] }, "human");
 connectedStore.changed();
 assert.equal(connectedStore.document.elements.some((element) => element.id === "link"), false, "deleting a connected node removes its dangling connector");
 assert.equal(connectedStore.document.agentElementIds.includes("link"), false, "removed connector no longer appears in the agent contribution metadata");
+
+const styledText = connectedStore.applyOperation({ type: "create_text", id: "styled", x: 20, y: 160, width: 260, text: "Important", fontFamily: "serif", fontWeight: 700, fontStyle: "italic", textAlign: "center", color: "#2457e6" }, "agent");
+assert.deepEqual(styledText, ["styled"]);
+connectedStore.applyOperation({ type: "highlight_text", ids: ["styled"], color: "#ffd84d", opacity: 0.22, padding: 8 }, "agent");
+const styled = connectedStore.document.elements.find((element) => element.id === "styled");
+const styledHighlightIndex = connectedStore.document.elements.findIndex((element) => element.type === "highlight");
+assert.equal(styled?.type === "text" ? `${styled.fontFamily}/${styled.fontWeight}/${styled.fontStyle}/${styled.textAlign}` : "", "serif/700/italic/center", "agent typography stays editable as text metadata");
+assert.ok(styledHighlightIndex >= 0 && styledHighlightIndex < connectedStore.document.elements.findIndex((element) => element.id === "styled"), "agent text marking is a separate editable highlight layered behind the text");
 
 const flowVisual = { kind: "flowchart" as const, id: "flow", title: "Ablauf", nodes: [
   { id: "start", label: "Start", role: "primary" as const }, { id: "check", label: "Prüfen", role: "decision" as const }, { id: "done", label: "Fertig" }
@@ -316,11 +331,13 @@ assert.deepEqual([snappedLower!.x1, snappedLower!.x2], [12, 128], "pen marker se
 assert.ok(snappedLower!.y > 115, "marker stays on the lower row instead of jumping upward");
 
 void (async () => {
-  const registered: Array<{ name: string; inputSchema?: Record<string, unknown> }> = [];
-  Object.defineProperty(globalThis, "document", { configurable: true, value: { modelContext: { registerTool: (tool: { name: string; inputSchema?: Record<string, unknown> }) => { registered.push(tool); } } } });
+  const registered: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }> = [];
+  Object.defineProperty(globalThis, "document", { configurable: true, value: { modelContext: { registerTool: (tool: { name: string; description?: string; inputSchema?: Record<string, unknown> }) => { registered.push(tool); } } } });
   const available = await registerWhiteboardTools({ inspect: () => ({}), apply: async () => ({}), compose: async () => ({}), complete: () => ({}) }, new AbortController().signal);
   assert.equal(available, true); assert.deepEqual(registered.map((tool) => tool.name), ["inspect_whiteboard", "apply_whiteboard_changes", "create_structured_visual", "complete_whiteboard_contribution"]);
   const visualTool = registered.find((tool) => tool.name === "create_structured_visual");
   assert.ok(JSON.stringify(visualTool?.inputSchema).includes("ui_wireframe") && JSON.stringify(visualTool?.inputSchema).includes("math_steps"), "WebMCP advertises high-level UI, learning and diagram capabilities");
+  const inspectTool = registered.find((tool) => tool.name === "inspect_whiteboard"); const applyTool = registered.find((tool) => tool.name === "apply_whiteboard_changes"); const applySchema = JSON.stringify(applyTool?.inputSchema);
+  assert.ok(inspectTool?.description?.includes("AI-Pen") && applySchema.includes("highlight_text") && applySchema.includes("fontFamily") && applySchema.includes("arrowHeads"), "WebMCP exposes spatial ink context, typography, text marking and richer arrows to the agent");
   console.log("core tests: ok");
 })().catch((error) => { console.error(error); process.exitCode = 1; });

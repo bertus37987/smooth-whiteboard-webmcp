@@ -17,7 +17,10 @@ This project turns the existing Smooth Handwriting vector canvas into a standalo
 - Grouping, alignment and equal-gap distribution for agent-created or human-created layouts
 - Undo, redo, local browser persistence and JSON import/export
 - Long thin command bar bound to the current lasso selection or the complete board
+- Blue glowing AI Pen: draw spatial instructions for the agent without adding permanent canvas ink
 - Progressive agent operations against the latest board revision
+- Separate red glowing agent markers with a hover explanation until the contribution is accepted or undone
+- Agent typography (sans, serif, mono and handwriting roles), text alignment/weight/style, text highlighting, filled shapes, rounded corners, line styles and one- or two-headed arrows
 - Structured editable visuals: UI wireframes, flowcharts, mindmaps, research briefs, calculation steps and plotted graphs
 - Human-editable agent output with a single Accept / Undo decision
 - Rounded pen-first black, white and grey interface with cache-safe high-contrast icons, contextual selection actions and no logo or filler content
@@ -26,8 +29,8 @@ This project turns the existing Smooth Handwriting vector canvas into a standalo
 
 The app registers four meaningful tools through `document.modelContext`:
 
-1. `inspect_whiteboard` returns the latest revision, viewport, pending human instruction, selection bounds and editable elements.
-2. `apply_whiteboard_changes` creates custom text, points/strokes, arbitrary polygons, shapes and arrows; it also edits path points, connects, moves, resizes, rewrites, styles, groups, duplicates, aligns, distributes, reorders or deletes objects progressively. A stale `baseRevision` is rejected so an agent cannot overwrite newer human work.
+1. `inspect_whiteboard` returns the latest revision, viewport, pending human instruction—including temporary AI-Pen coordinates—selection bounds and editable elements.
+2. `apply_whiteboard_changes` creates styled text, highlights, points/strokes, arbitrary polygons, filled shapes and configurable arrows; it also edits path points, connects, moves, resizes, rewrites, styles, groups, duplicates, aligns, distributes, reorders or deletes objects progressively. A stale `baseRevision` is rejected so an agent cannot overwrite newer human work.
 3. `create_structured_visual` builds a coherent UI proposal, flowchart, mindmap, research brief, calculation or graph from a compact specification and compiles it into ordinary editable objects.
 4. `complete_whiteboard_contribution` ends a contribution and exposes Accept / Undo to the human.
 
