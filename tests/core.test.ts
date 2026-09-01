@@ -5,9 +5,10 @@ import { normalizeHandwritingWord } from "../src/handwriting-normalizer";
 import { draggedShapePoints, optimizeShape, shapeContainsPoint } from "../src/shapes";
 import { snapHighlightToWords, wordBoxes } from "../src/smart-highlight";
 import { InkPoint, InkStroke, beautifyStroke, modelCapturedStroke, pressureWidth, visibleInkColor } from "../src/strokes";
-import { connectionPoints, estimateTextHeight, isCanvasOperation, lassoElements, migrateBoard, operationElement, scaleElement, translateElement } from "../web-src/model";
+import { connectionPoints, eraseInkElement, erasePolyline, estimateTextHeight, isCanvasOperation, lassoElements, lintBoard, migrateBoard, operationElement, scaleElement, translateElement } from "../web-src/model";
 import { BoardStore } from "../web-src/store";
 import { composeVisual, isVisualComposition } from "../web-src/compositions";
+import { exportPages } from "../web-src/export";
 import { registerWhiteboardTools } from "../web-src/webmcp";
 
 const point = (x: number, y: number): InkPoint => ({ x, y, pressure: 0.5 });
@@ -87,15 +88,17 @@ assert.ok(freeMarker.type === "highlight" && (freeMarker.points?.[2].x ?? 0) > 1
 const storedBoards = new Map<string, string>();
 Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
   getItem: (key: string) => storedBoards.get(key) ?? null,
-  setItem: (key: string, value: string) => storedBoards.set(key, value)
+  setItem: (key: string, value: string) => storedBoards.set(key, value),
+  removeItem: (key: string) => storedBoards.delete(key)
 } });
 const connectedStore = new BoardStore();
-connectedStore.document.turn = { id: "ink-turn", status: "queued", submittedRevision: 0, selectionIds: [], createdAt: new Date(0).toISOString(), instructionInk: [[point(10, 10), point(40, 40)]], priorityRegions: [], changedElementIds: [] };
+connectedStore.document.turn = { id: "ink-turn", status: "queued", submittedRevision: 0, promptText: "Temporärer Prompt", selectionIds: [], createdAt: new Date(0).toISOString(), instructionInk: [[point(10, 10), point(40, 40)]], agentMarkers: [], priorityRegions: [], changedElementIds: [], pendingChangeIds: [] };
 assert.equal(connectedStore.document.elements.length, 0, "AI-Pen ink is request context and never a permanent canvas element");
 connectedStore.acceptAgentContribution();
 assert.deepEqual(connectedStore.document.turn?.instructionInk, [], "accepting an agent contribution clears the transient AI-Pen overlay");
+assert.equal(connectedStore.document.turn?.promptText, "", "accepted text instructions do not reappear after a reload");
 const migratedWebBoard = migrateBoard({ version: 1, revision: 2, elements: [], agentElementIds: [], request: { id: "old", instruction: "old", selectionIds: [], createdAt: new Date(0).toISOString(), state: "ready", ink: [] } });
-assert.equal(migratedWebBoard?.version, 2, "legacy web boards migrate to the turn-based document format");
+assert.equal(migratedWebBoard?.version, 3, "legacy web boards migrate to the turn-based document format");
 assert.equal(migratedWebBoard?.turn?.status, "queued");
 connectedStore.applyOperation({ type: "create_shape", id: "source", kind: "rectangle", x: 0, y: 0, width: 100, height: 80 }, "agent");
 connectedStore.applyOperation({ type: "create_shape", id: "target", kind: "ellipse", x: 300, y: 0, width: 100, height: 80 }, "agent");
@@ -353,14 +356,62 @@ const snappedLower = snapHighlightToWords(twoRows, { ...marker(28, 105), y: 143 
 assert.deepEqual([snappedLower!.x1, snappedLower!.x2], [12, 128], "pen marker selects only the touched writing row");
 assert.ok(snappedLower!.y > 115, "marker stays on the lower row instead of jumping upward");
 
+const erasedLine = erasePolyline([point(0, 0), point(100, 0)], point(50, 0), 10);
+assert.equal(erasedLine.length, 2, "pixel eraser cuts a freehand line into two editable segments");
+assert.ok((erasedLine[0].at(-1)?.x ?? 100) <= 40.01 && (erasedLine[1][0]?.x ?? 0) >= 59.99);
+const humanInk = { ...stroke([point(0, 0), point(100, 0)]), type: "stroke" as const, id: "human-ink", size: 4 };
+const erasedInk = eraseInkElement(humanInk, point(50, 0), 8);
+assert.equal(erasedInk?.length, 2, "ordinary Human Pen ink is segment-erased instead of deleting the whole stroke");
+const humanMarker: HighlightElement = { type: "highlight", id: "human-marker", x1: 0, x2: 100, y: 20, points: [point(0, 20), point(100, 20)], size: 18, color: "#ffd84d", opacity: .28 };
+assert.equal(eraseInkElement(humanMarker, point(50, 20), 5)?.length, 2, "freehand Human Marker paths use the same pixel eraser");
+
+storedBoards.clear(); const reviewStore = new BoardStore();
+reviewStore.document.turn = { id: "review-turn", status: "queued", submittedRevision: 0, promptText: "Beschrifte die Zelle", selectionIds: [], createdAt: new Date(0).toISOString(), instructionInk: [[point(1, 1), point(2, 2)]], agentMarkers: [], priorityRegions: [], changedElementIds: [], pendingChangeIds: [] };
+reviewStore.beginAgentContribution();
+const proposalIds = reviewStore.applyOperation({ type: "create_shape", id: "proposal", kind: "ellipse", x: 10, y: 10, width: 100, height: 80 }, "agent");
+reviewStore.applyOperation({ type: "create_agent_marker", id: "comment", x: 120, y: 30, text: "Kern hier beschriften" }, "agent");
+reviewStore.document.turn.pendingChangeIds.push(...proposalIds); reviewStore.document.turn.status = "review"; reviewStore.changed();
+assert.equal(reviewStore.document.turn.agentMarkers.length, 1, "the red Agent Marker is stored only in transient turn context");
+assert.equal(reviewStore.document.elements.some((element) => element.id === "comment"), false, "Agent Marker comments never become permanent canvas elements");
+assert.equal(reviewStore.undoAgentContribution(), true);
+assert.equal(reviewStore.document.elements.some((element) => element.id === "proposal"), false, "reject restores the complete pre-agent board snapshot");
+assert.equal(reviewStore.document.turn?.status, "cancelled");
+assert.deepEqual(reviewStore.document.turn?.instructionInk, []);
+
+storedBoards.clear(); const artboardStore = new BoardStore();
+const artboardIds = artboardStore.applyOperation({ type: "create_frame", id: "mobile", title: "Mobile", x: 0, y: 0, width: 390, height: 844, artboardPreset: "mobile", backgroundColor: "#ffffff", clipContent: true }, "agent");
+const artboardId = artboardIds[0];
+artboardStore.applyOperation({ type: "create_shape", id: "tiny-button", kind: "rectangle", x: 20, y: 100, width: 30, height: 30, semanticRole: "button", parentId: artboardId, fillColor: "#000000", fillOpacity: 1 }, "agent");
+artboardStore.applyOperation({ type: "create_text", id: "overflow", x: 360, y: 120, width: 120, text: "Außerhalb", fontSize: 24, parentId: artboardId }, "agent");
+const overflowingText = artboardStore.document.elements.find((element) => element.id === "overflow"); if (overflowingText?.type === "text") overflowingText.height = 20;
+artboardStore.applyOperation({ type: "set_explanation_sequence", sequence: { id: "mobile-tour", title: "Mobile UI", steps: [{ id: "one", title: "Start", focusElementIds: ["tiny-button"], revealElementIds: ["tiny-button"] }] } }, "agent");
+artboardStore.changed();
+assert.ok(artboardStore.document.artboardIds.includes(artboardId), "agent and human canvas content can be attached to a real artboard");
+assert.equal(artboardStore.document.elements.find((element) => element.id === "tiny-button")?.parentId, artboardId);
+assert.equal(artboardStore.document.explanationSequences[0].steps[0].focusElementIds[0], "tiny-button", "step-by-step explainers retain editable focus and reveal references");
+const lintCodes = new Set(lintBoard(artboardStore.document).map((issue) => issue.code));
+assert.ok(lintCodes.has("small-target") && lintCodes.has("off-artboard") && lintCodes.has("text-overflow"), "UI lint catches touch-target, artboard and text-layout defects");
+
+const guidedOperations = composeVisual({ kind: "guided_explainer", id: "cell-tour", title: "Zelle", nodes: [{ id: "membrane", label: "Membran", detail: "grenzt ab" }, { id: "nucleus", label: "Zellkern", detail: "enthält DNA" }], presentationSteps: [{ title: "Außen", focusIds: ["membrane"] }, { title: "Innen", focusIds: ["nucleus"] }] });
+assert.ok(guidedOperations.every(isCanvasOperation) && guidedOperations.some((operation) => operation.type === "set_explanation_sequence"), "guided explainers compile to canvas content plus a progressive presentation sequence");
+const uiMockupOperations = composeVisual({ kind: "ui_mockup", id: "dashboard", title: "Dashboard", nodes: [{ id: "nav", label: "Navigation", role: "sidebar" }, { id: "cta", label: "Speichern", role: "button" }], theme: { background: "#ffffff", text: "#080808", accent: "#404040" } });
+assert.ok(uiMockupOperations.some((operation) => operation.type === "create_frame" && operation.artboardPreset === "desktop"), "UI mockups are created on structured exportable artboards");
+artboardStore.applyOperation({ type: "create_frame", id: "desktop", title: "Desktop", x: 500, y: 0, width: 960, height: 640, artboardPreset: "desktop", backgroundColor: "#ffffff" }, "agent");
+artboardStore.applyOperation({ type: "create_text", id: "desktop-child", x: 540, y: 90, width: 300, text: "Nur auf Seite zwei", parentId: "desktop-border" }, "agent"); artboardStore.changed();
+const exportedArtboards = exportPages(artboardStore.document);
+assert.equal(exportedArtboards.length, 2, "each artboard becomes one page in multi-page PDF export");
+assert.deepEqual(exportedArtboards.map((page) => page.name), ["Mobile", "Desktop"]);
+assert.equal(exportedArtboards[1].elements.some((element) => element.id === "desktop-child"), true, "artboard exports include their parented editable content");
+assert.equal(exportedArtboards[0].elements.some((element) => element.id === "desktop-child"), false, "artboard exports do not leak content from another page");
+
 void (async () => {
   const registered: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }> = [];
   Object.defineProperty(globalThis, "document", { configurable: true, value: { modelContext: { registerTool: (tool: { name: string; description?: string; inputSchema?: Record<string, unknown> }) => { registered.push(tool); } } } });
   const available = await registerWhiteboardTools({ session: () => ({}), waitForTurn: async () => ({}), inspect: () => ({}), focus: () => ({}), publishPlan: () => ({}), apply: async () => ({}), compose: async () => ({}), complete: () => ({}) }, new AbortController().signal);
   assert.equal(available, true); assert.deepEqual(registered.map((tool) => tool.name), ["start_whiteboard_session", "wait_for_human_turn", "inspect_whiteboard", "focus_whiteboard_region", "publish_agent_plan", "apply_whiteboard_changes", "create_structured_visual", "complete_whiteboard_contribution"]);
   const visualTool = registered.find((tool) => tool.name === "create_structured_visual");
-  assert.ok(JSON.stringify(visualTool?.inputSchema).includes("ui_wireframe") && JSON.stringify(visualTool?.inputSchema).includes("study_note"), "WebMCP advertises high-level UI, learning and diagram capabilities");
+  assert.ok(JSON.stringify(visualTool?.inputSchema).includes("ui_mockup") && JSON.stringify(visualTool?.inputSchema).includes("guided_explainer"), "WebMCP advertises high-level UI, learning and diagram capabilities");
   const inspectTool = registered.find((tool) => tool.name === "inspect_whiteboard"); const applyTool = registered.find((tool) => tool.name === "apply_whiteboard_changes"); const applySchema = JSON.stringify(applyTool?.inputSchema);
-  assert.ok(inspectTool?.description?.includes("AI pen") && applySchema.includes("highlight_text") && applySchema.includes("fontFamily") && applySchema.includes("arrowHeads") && applySchema.includes("create_table"), "WebMCP exposes spatial ink context, typography, tables, text marking and richer arrows to the agent");
+  assert.ok(inspectTool?.description?.includes("AI pen") && applySchema.includes("highlight_text") && applySchema.includes("fontFamily") && applySchema.includes("arrowHeads") && applySchema.includes("create_table") && applySchema.includes("create_agent_marker") && applySchema.includes("update_artboard"), "WebMCP exposes spatial ink context, agent-only tables, typography, temporary marker comments, artboards and richer arrows");
   console.log("core tests: ok");
 })().catch((error) => { console.error(error); process.exitCode = 1; });

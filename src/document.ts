@@ -6,8 +6,20 @@ export type ShapeKind = "line" | "arrow" | "ellipse" | "rectangle" | "polygon";
 export interface ElementMeta {
   locked?: boolean;
   opacity?: number;
+  /** Human-readable layer name used by artboards and agent inspection. */
+  name?: string;
+  /** Optional containing artboard or semantic frame. */
+  parentId?: string;
   semanticRole?: string;
   renderStyle?: "clean" | "sketch";
+  /** Lightweight artboard metadata. Artboards stay ordinary editable shapes. */
+  artboard?: {
+    preset: "desktop" | "tablet" | "mobile" | "custom";
+    backgroundColor: string;
+    clipContent?: boolean;
+  };
+  /** Optional references to source cards used by visual explanations. */
+  sourceRefs?: string[];
   /** One-shot human context marker included in the next agent turn. */
   agentAttached?: boolean;
 }

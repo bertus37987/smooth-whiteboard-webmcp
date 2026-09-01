@@ -1,13 +1,13 @@
 import { CanvasOperation } from "./model";
 
-export type VisualKind = "flowchart" | "mindmap" | "ui_wireframe" | "research_report" | "math_steps" | "plot" | "study_note" | "timeline" | "comparison" | "hierarchy" | "visual_explainer";
+export type VisualKind = "flowchart" | "mindmap" | "ui_wireframe" | "ui_mockup" | "research_report" | "math_steps" | "plot" | "study_note" | "timeline" | "comparison" | "hierarchy" | "visual_explainer" | "guided_explainer";
 
 export interface VisualNodeInput {
   id: string;
   label: string;
   detail?: string;
   parentId?: string;
-  role?: "primary" | "secondary" | "decision" | "frame" | "header" | "sidebar" | "card" | "button" | "input" | "text";
+  role?: "primary" | "secondary" | "decision" | "frame" | "screen" | "header" | "navbar" | "sidebar" | "section" | "card" | "button" | "input" | "checkbox" | "radio" | "switch" | "select" | "tabs" | "list" | "modal" | "badge" | "avatar" | "divider" | "icon" | "callout" | "legend" | "example" | "warning" | "source" | "text";
   x?: number;
   y?: number;
   width?: number;
@@ -33,6 +33,8 @@ export interface VisualCompositionInput {
   steps?: VisualStepInput[];
   axes?: { xMin: number; xMax: number; yMin: number; yMax: number; xLabel?: string; yLabel?: string };
   series?: VisualSeriesInput[];
+  presentationSteps?: Array<{ title: string; body?: string; focusIds: string[]; revealIds?: string[] }>;
+  theme?: { background?: string; surface?: string; text?: string; accent?: string };
 }
 
 const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
@@ -41,13 +43,14 @@ const cleanId = (value: string): string => value.trim().replace(/[^a-zA-Z0-9_-]+
 
 export function isVisualComposition(value: unknown): value is VisualCompositionInput {
   if (!value || typeof value !== "object") return false; const input = value as Record<string, unknown>;
-  if (!["flowchart", "mindmap", "ui_wireframe", "research_report", "math_steps", "plot", "study_note", "timeline", "comparison", "hierarchy", "visual_explainer"].includes(String(input.kind))) return false;
+  if (!["flowchart", "mindmap", "ui_wireframe", "ui_mockup", "research_report", "math_steps", "plot", "study_note", "timeline", "comparison", "hierarchy", "visual_explainer", "guided_explainer"].includes(String(input.kind))) return false;
   if (![input.x, input.y, input.width, input.height].every(optionalFinite)) return false;
   if (input.nodes !== undefined && (!Array.isArray(input.nodes) || input.nodes.length > 40 || input.nodes.some((node) => !node || typeof node !== "object" || typeof node.id !== "string" || typeof node.label !== "string" || !optionalFinite(node.x) || !optionalFinite(node.y) || !optionalFinite(node.width) || !optionalFinite(node.height)))) return false;
   if (input.edges !== undefined && (!Array.isArray(input.edges) || input.edges.length > 80 || input.edges.some((edge) => !edge || typeof edge !== "object" || typeof edge.fromId !== "string" || typeof edge.toId !== "string"))) return false;
   if (input.sections !== undefined && (!Array.isArray(input.sections) || input.sections.length > 20 || input.sections.some((section) => !section || typeof section !== "object" || typeof section.heading !== "string" || typeof section.body !== "string"))) return false;
   if (input.steps !== undefined && (!Array.isArray(input.steps) || input.steps.length > 30 || input.steps.some((step) => !step || typeof step !== "object" || typeof step.expression !== "string"))) return false;
   if (input.series !== undefined && (!Array.isArray(input.series) || input.series.length > 8 || input.series.some((series) => !series || typeof series !== "object" || !Array.isArray(series.points) || series.points.length > 400 || series.points.some((point: Record<string, unknown>) => !point || !finite(point.x) || !finite(point.y))))) return false;
+  if (input.presentationSteps !== undefined && (!Array.isArray(input.presentationSteps) || input.presentationSteps.length > 40 || input.presentationSteps.some((step) => !step || typeof step !== "object" || typeof step.title !== "string" || !Array.isArray(step.focusIds) || step.focusIds.some((id: unknown) => typeof id !== "string")))) return false;
   return true;
 }
 
@@ -88,17 +91,16 @@ function mindmap(input: VisualCompositionInput, prefix: string): CanvasOperation
 }
 
 function uiWireframe(input: VisualCompositionInput, prefix: string): CanvasOperation[] {
-  const x = input.x ?? -520; const y = input.y ?? -330; const width = input.width ?? 1040; const height = input.height ?? 660; const operations: CanvasOperation[] = [
-    { type: "create_shape", id: `${prefix}-screen`, kind: "rectangle", x, y, width, height, color: "#080808", strokeWidth: 4, fillColor: "#ffffff", fillOpacity: 1, radius: 24 },
-    ...titleOperations(prefix, input.title, x + 26, y + 22, Math.min(560, width - 52))
-  ];
+  const x = input.x ?? -520; const y = input.y ?? -330; const width = input.width ?? 1040; const height = input.height ?? 660; const theme = { background: input.theme?.background ?? "#ffffff", surface: input.theme?.surface ?? "#ffffff", text: input.theme?.text ?? "#080808", accent: input.theme?.accent ?? "#080808" }; const artboardId = `${prefix}-screen-border`; const operations: CanvasOperation[] = [
+    { type: "create_frame", id: `${prefix}-screen`, x, y, width, height, title: input.title, color: theme.text, backgroundColor: theme.background, artboardPreset: width < 600 ? "mobile" : "desktop", semanticRole: "artboard", name: input.title ?? "UI mockup" }
+  ]; const children: string[] = [];
   const nodes = input.nodes ?? []; nodes.forEach((node, index) => {
-    const role = node.role ?? "card"; const defaults: Record<string, { w: number; h: number }> = { header: { w: width - 48, h: 76 }, sidebar: { w: 220, h: height - 140 }, card: { w: 250, h: 150 }, button: { w: 160, h: 52 }, input: { w: 260, h: 52 }, text: { w: 300, h: 70 }, frame: { w: 420, h: 280 } }; const size = defaults[role] ?? defaults.card;
+    const role = node.role ?? "card"; const defaults: Record<string, { w: number; h: number }> = { header: { w: width - 48, h: 76 }, navbar: { w: width - 48, h: 68 }, sidebar: { w: 220, h: height - 140 }, section: { w: 520, h: 260 }, card: { w: 250, h: 150 }, button: { w: 160, h: 52 }, input: { w: 260, h: 56 }, checkbox: { w: 180, h: 48 }, radio: { w: 180, h: 48 }, switch: { w: 92, h: 48 }, select: { w: 240, h: 56 }, tabs: { w: 340, h: 52 }, list: { w: 320, h: 220 }, modal: { w: 440, h: 300 }, badge: { w: 110, h: 42 }, avatar: { w: 72, h: 72 }, divider: { w: 360, h: 12 }, icon: { w: 48, h: 48 }, text: { w: 300, h: 70 }, frame: { w: 420, h: 280 } }; const size = defaults[role] ?? defaults.card;
     const w = node.width ?? size.w; const h = node.height ?? size.h; const px = node.x ?? x + 30 + (index % 3) * 290; const py = node.y ?? y + 110 + Math.floor(index / 3) * 190;
-    if (role === "text") { const id = idsFor(prefix, node).text; operations.push({ type: "create_text", id, x: px, y: py, width: w, fontSize: 22, color: "#080808", text: node.detail ? `${node.label}\n${node.detail}` : node.label }); }
-    else operations.push(...cardOperations(prefix, node, px, py, w, h, role === "input"));
+    if (role === "text") { const id = idsFor(prefix, node).text; operations.push({ type: "create_text", id, x: px, y: py, width: w, fontSize: 22, color: theme.text, text: node.detail ? `${node.label}\n${node.detail}` : node.label, semanticRole: role, parentId: artboardId }); children.push(id); }
+    else { const card = cardOperations(prefix, node, px, py, w, h, role === "input" || role === "avatar"); for (const operation of card) { if (operation.type === "create_shape" || operation.type === "create_text") operation.parentId = artboardId; if (operation.type === "create_shape") { operation.semanticRole = role; operation.fillColor = role === "button" ? theme.accent : theme.surface; operation.fillOpacity = 1; } if (operation.type === "create_text") operation.color = role === "button" && theme.accent === "#080808" ? "#ffffff" : theme.text; } operations.push(...card); children.push(idsFor(prefix, node).shape, idsFor(prefix, node).text); }
   });
-  operations.push({ type: "reorder", ids: [`${prefix}-screen`], direction: "back" }); return operations;
+  operations.push({ type: "reorder", ids: [artboardId], direction: "back" }); return operations;
 }
 
 function researchReport(input: VisualCompositionInput, prefix: string): CanvasOperation[] {
@@ -156,7 +158,7 @@ export function composeVisual(input: VisualCompositionInput): CanvasOperation[] 
   const prefix = cleanId(input.id ?? `visual-${crypto.randomUUID()}`);
   if (input.kind === "flowchart") return flowchart(input, prefix);
   if (input.kind === "mindmap") return mindmap(input, prefix);
-  if (input.kind === "ui_wireframe") return uiWireframe(input, prefix);
+  if (input.kind === "ui_wireframe" || input.kind === "ui_mockup") return uiWireframe(input, prefix);
   if (input.kind === "research_report") return researchReport(input, prefix);
   if (input.kind === "math_steps") return mathSteps(input, prefix);
   if (input.kind === "study_note") return studyNote(input, prefix);
@@ -167,6 +169,8 @@ export function composeVisual(input: VisualCompositionInput): CanvasOperation[] 
     const nodes = sourceNodes.map((node, index) => ({ ...node, parentId: node.parentId ?? (index > 0 ? sourceNodes[Math.floor((index - 1) / 2)]?.id : undefined) }));
     return flowchart({ ...input, kind: "flowchart", nodes }, prefix);
   }
-  if (input.kind === "visual_explainer") return visualExplainer(input, prefix);
+  if (input.kind === "visual_explainer" || input.kind === "guided_explainer") {
+    const operations = visualExplainer(input, prefix); const nodes = input.nodes ?? []; const resolve = (id: string): string[] => { const index = nodes.findIndex((node) => node.id === id); return index < 0 ? [id] : [`${prefix}-idea-${index}-card`, `${prefix}-idea-${index}-text`]; }; const steps = input.presentationSteps?.length ? input.presentationSteps.map((step, index) => ({ id: `${prefix}-step-${index}`, title: step.title, body: step.body, focusElementIds: step.focusIds.flatMap(resolve), revealElementIds: (step.revealIds ?? step.focusIds).flatMap(resolve) })) : nodes.map((node, index) => ({ id: `${prefix}-step-${index}`, title: node.label, body: node.detail, focusElementIds: resolve(node.id), revealElementIds: resolve(node.id) })); if (steps.length) operations.push({ type: "set_explanation_sequence", sequence: { id: `${prefix}-sequence`, title: input.title ?? "Geführte Erklärung", steps } }); return operations;
+  }
   return plot(input, prefix);
 }

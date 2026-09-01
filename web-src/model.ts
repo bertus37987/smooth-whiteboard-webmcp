@@ -15,15 +15,44 @@ export interface PriorityRegion {
   elementIds: string[];
   priority: number;
 }
+export interface AgentMarkerAnnotation {
+  id: string;
+  kind: "stroke" | "note";
+  points?: InkPoint[];
+  x?: number;
+  y?: number;
+  text?: string;
+  anchorId?: string;
+}
+export interface ExplanationStep {
+  id: string;
+  title: string;
+  body?: string;
+  focusElementIds: string[];
+  revealElementIds: string[];
+  cameraBounds?: { minX: number; minY: number; maxX: number; maxY: number };
+}
+export interface ExplanationSequence { id: string; title: string; steps: ExplanationStep[] }
+export interface SourceReference { id: string; title: string; url?: string }
+export interface BoardLintIssue {
+  code: "text-overflow" | "off-artboard" | "small-target" | "overlap" | "low-contrast" | "unlabelled-control";
+  severity: "info" | "warning";
+  elementIds: string[];
+  message: string;
+  suggestedFix: string;
+}
 export interface CollaborationTurn {
   id: string;
-  status: "queued" | "claimed" | "planning" | "working" | "complete" | "cancelled";
+  status: "queued" | "claimed" | "planning" | "working" | "review" | "complete" | "cancelled";
   submittedRevision: number;
   createdAt: string;
+  promptText: string;
   selectionIds: string[];
   instructionInk: InkPoint[][];
+  agentMarkers: AgentMarkerAnnotation[];
   priorityRegions: PriorityRegion[];
   changedElementIds: string[];
+  pendingChangeIds: string[];
   planSummary?: string;
   leaseToken?: string;
 }
@@ -37,7 +66,7 @@ export interface CollaborationRequest {
   ink?: InkPoint[][];
 }
 export interface WhiteboardDocument {
-  version: 2;
+  version: 3;
   revision: number;
   elements: PageElement[];
   agentElementIds: string[];
@@ -47,21 +76,26 @@ export interface WhiteboardDocument {
   lastAgentRevision: number;
   connections?: Record<string, { fromId: string; toId: string; labelId?: string }>;
   groups?: Record<string, string[]>;
+  artboardIds: string[];
+  explanationSequences: ExplanationSequence[];
+  sources: SourceReference[];
 }
 
-export type BoardTool = "select" | "hand" | "pen" | "ai-pen" | "marker" | "rectangle" | "ellipse" | "arrow" | "text" | "sticky" | "table" | "image" | "lasso" | "eraser";
+export type BoardTool = "select" | "hand" | "pen" | "ai-pen" | "marker" | "rectangle" | "ellipse" | "arrow" | "text" | "sticky" | "image" | "lasso" | "eraser" | "artboard";
 
 export type CanvasOperation =
-  | { type: "create_text"; id?: string; x: number; y: number; text: string; fontSize?: number; width?: number; color?: string; fontFamily?: "sans" | "serif" | "mono" | "handwriting"; fontWeight?: 400 | 500 | 600 | 700; fontStyle?: "normal" | "italic"; textDecoration?: "none" | "underline" | "line-through"; textAlign?: "left" | "center" | "right"; blockStyle?: TextElement["blockStyle"]; highlightColor?: string; renderStyle?: "clean" | "sketch"; semanticRole?: string }
+  | { type: "create_text"; id?: string; x: number; y: number; text: string; fontSize?: number; width?: number; color?: string; fontFamily?: "sans" | "serif" | "mono" | "handwriting"; fontWeight?: 400 | 500 | 600 | 700; fontStyle?: "normal" | "italic"; textDecoration?: "none" | "underline" | "line-through"; textAlign?: "left" | "center" | "right"; blockStyle?: TextElement["blockStyle"]; highlightColor?: string; renderStyle?: "clean" | "sketch"; semanticRole?: string; parentId?: string; name?: string; sourceRefs?: string[] }
   | { type: "create_note"; id?: string; x: number; y: number; width?: number; height?: number; text: string; color?: string; fillColor?: string; blockStyle?: TextElement["blockStyle"]; renderStyle?: "clean" | "sketch" }
   | { type: "create_table"; id?: string; x: number; y: number; width: number; height: number; rows: number; columns: number; headers?: string[]; cells?: string[]; color?: string; fillColor?: string; renderStyle?: "clean" | "sketch" }
-  | { type: "create_frame"; id?: string; x: number; y: number; width: number; height: number; title?: string; color?: string; renderStyle?: "clean" | "sketch" }
+  | { type: "create_frame"; id?: string; x: number; y: number; width: number; height: number; title?: string; color?: string; backgroundColor?: string; renderStyle?: "clean" | "sketch"; semanticRole?: string; parentId?: string; name?: string; artboardPreset?: "desktop" | "tablet" | "mobile" | "custom"; clipContent?: boolean }
   | { type: "create_highlight"; id?: string; x: number; y: number; width: number; points?: InkPoint[]; size?: number; color?: string; opacity?: number }
   | { type: "highlight_text"; ids: string[]; color?: string; opacity?: number; padding?: number }
-  | { type: "create_shape"; id?: string; kind: "rectangle" | "ellipse"; x: number; y: number; width: number; height: number; filled?: boolean; color?: string; strokeWidth?: number; fillColor?: string; fillOpacity?: number; radius?: number; lineStyle?: "solid" | "dashed" | "dotted" }
+  | { type: "create_shape"; id?: string; kind: "rectangle" | "ellipse"; x: number; y: number; width: number; height: number; filled?: boolean; color?: string; strokeWidth?: number; fillColor?: string; fillOpacity?: number; radius?: number; lineStyle?: "solid" | "dashed" | "dotted"; semanticRole?: string; parentId?: string; name?: string }
   | { type: "create_arrow"; id?: string; from: { x: number; y: number }; to: { x: number; y: number }; color?: string; strokeWidth?: number; arrowHeads?: "end" | "start" | "both"; lineStyle?: "solid" | "dashed" | "dotted" }
   | { type: "create_stroke"; id?: string; points: InkPoint[]; size?: number; color?: string }
   | { type: "create_polygon"; id?: string; points: InkPoint[]; closed?: boolean; color?: string; strokeWidth?: number; fillColor?: string; fillOpacity?: number }
+  | { type: "create_icon"; id?: string; name: "check" | "close" | "plus" | "minus" | "menu" | "search" | "user" | "heart"; x: number; y: number; size?: number; color?: string; parentId?: string }
+  | { type: "create_agent_marker"; id?: string; points?: InkPoint[]; x?: number; y?: number; text?: string; anchorId?: string }
   | { type: "translate"; ids: string[]; dx: number; dy: number }
   | { type: "resize"; id: string; x: number; y: number; width: number; height: number }
   | { type: "update_text"; id: string; text: string }
@@ -75,6 +109,9 @@ export type CanvasOperation =
   | { type: "duplicate"; ids: string[]; dx?: number; dy?: number }
   | { type: "group"; ids: string[]; groupId?: string }
   | { type: "ungroup"; groupId?: string; ids?: string[] }
+  | { type: "set_parent"; ids: string[]; parentId?: string }
+  | { type: "update_artboard"; id: string; name?: string; preset?: "desktop" | "tablet" | "mobile" | "custom"; backgroundColor?: string; clipContent?: boolean }
+  | { type: "set_explanation_sequence"; sequence: ExplanationSequence }
   | { type: "delete"; ids: string[] };
 
 const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
@@ -97,6 +134,8 @@ export function isCanvasOperation(value: unknown): value is CanvasOperation {
     case "create_arrow": return position(operation.from) && position(operation.to) && optionalFinite(operation.strokeWidth) && optionalOneOf(operation.arrowHeads, ["end", "start", "both"]) && optionalOneOf(operation.lineStyle, ["solid", "dashed", "dotted"]);
     case "create_stroke": return Array.isArray(operation.points) && operation.points.length > 1 && operation.points.every(position);
     case "create_polygon": return Array.isArray(operation.points) && operation.points.length > 1 && operation.points.every(position);
+    case "create_icon": return typeof operation.name === "string" && ["check", "close", "plus", "minus", "menu", "search", "user", "heart"].includes(operation.name) && finite(operation.x) && finite(operation.y) && optionalFinite(operation.size);
+    case "create_agent_marker": return (Array.isArray(operation.points) && operation.points.length > 1 && operation.points.every(position)) || (finite(operation.x) && finite(operation.y) && typeof operation.text === "string" && operation.text.trim().length > 0);
     case "translate": return ids(operation.ids) && finite(operation.dx) && finite(operation.dy);
     case "resize": return typeof operation.id === "string" && finite(operation.x) && finite(operation.y) && finite(operation.width) && finite(operation.height);
     case "update_text": return typeof operation.id === "string" && typeof operation.text === "string";
@@ -110,24 +149,35 @@ export function isCanvasOperation(value: unknown): value is CanvasOperation {
     case "duplicate": return ids(operation.ids) && (operation.dx === undefined || finite(operation.dx)) && (operation.dy === undefined || finite(operation.dy));
     case "group": return ids(operation.ids) && operation.ids.length > 0 && (operation.groupId === undefined || typeof operation.groupId === "string");
     case "ungroup": return typeof operation.groupId === "string" || ids(operation.ids);
+    case "set_parent": return ids(operation.ids) && (operation.parentId === undefined || typeof operation.parentId === "string");
+    case "update_artboard": return typeof operation.id === "string" && optionalOneOf(operation.preset, ["desktop", "tablet", "mobile", "custom"]);
+    case "set_explanation_sequence": {
+      const sequence = operation.sequence as Record<string, unknown> | undefined;
+      return Boolean(sequence) && typeof sequence?.id === "string" && typeof sequence.title === "string" && Array.isArray(sequence.steps)
+        && sequence.steps.length > 0 && sequence.steps.length <= 60 && sequence.steps.every((step) => Boolean(step) && typeof step.id === "string" && typeof step.title === "string" && ids(step.focusElementIds) && ids(step.revealElementIds));
+    }
     case "delete": return ids(operation.ids);
     default: return false;
   }
 }
 
 export const defaultSettings = (): WhiteboardSettings => ({ inputSmoothing: true, pressure: true, autoShape: false, smartHighlight: true, englishHandwritingAssist: true });
-export const emptyBoard = (): WhiteboardDocument => ({ version: 2, revision: 0, elements: [], agentElementIds: [], request: null, turn: null, settings: defaultSettings(), lastAgentRevision: 0, connections: {}, groups: {} });
+export const emptyBoard = (): WhiteboardDocument => ({ version: 3, revision: 0, elements: [], agentElementIds: [], request: null, turn: null, settings: defaultSettings(), lastAgentRevision: 0, connections: {}, groups: {}, artboardIds: [], explanationSequences: [], sources: [] });
 
 export function cloneBoard(document: WhiteboardDocument): WhiteboardDocument { return structuredClone(document); }
 
 export function validBoard(value: unknown): value is WhiteboardDocument {
   if (!value || typeof value !== "object") return false;
   const candidate = value as Partial<WhiteboardDocument>;
-  return candidate.version === 2 && typeof candidate.revision === "number" && Array.isArray(candidate.elements) && Array.isArray(candidate.agentElementIds) && Boolean(candidate.settings);
+  return candidate.version === 3 && typeof candidate.revision === "number" && Array.isArray(candidate.elements) && Array.isArray(candidate.agentElementIds) && Boolean(candidate.settings);
 }
 
 export function migrateBoard(value: unknown): WhiteboardDocument | null {
-  if (validBoard(value)) return cloneBoard(value);
+  if (validBoard(value)) {
+    const board = cloneBoard(value); board.artboardIds ??= []; board.explanationSequences ??= []; board.sources ??= [];
+    if (board.turn) { board.turn.promptText ??= ""; board.turn.agentMarkers ??= []; board.turn.pendingChangeIds ??= []; }
+    return board;
+  }
   if (!value || typeof value !== "object") return null; const legacy = value as {
     version?: number;
     revision?: number;
@@ -137,10 +187,15 @@ export function migrateBoard(value: unknown): WhiteboardDocument | null {
     connections?: WhiteboardDocument["connections"];
     groups?: WhiteboardDocument["groups"];
   };
-  if (legacy.version !== 1 || typeof legacy.revision !== "number" || !Array.isArray(legacy.elements) || !Array.isArray(legacy.agentElementIds)) return null;
+  if (![1, 2].includes(legacy.version ?? 0) || typeof legacy.revision !== "number" || !Array.isArray(legacy.elements) || !Array.isArray(legacy.agentElementIds)) return null;
   const request = legacy.request ?? null;
-  const turn: CollaborationTurn | null = request && request.state !== "answered" ? { id: request.id, status: request.state === "working" ? "working" : "queued", submittedRevision: legacy.revision, createdAt: request.createdAt, selectionIds: request.selectionIds, instructionInk: request.ink ?? [], priorityRegions: [], changedElementIds: [] } : null;
-  return { version: 2, revision: legacy.revision, elements: structuredClone(legacy.elements), agentElementIds: [...legacy.agentElementIds], request: null, turn, settings: defaultSettings(), lastAgentRevision: 0, connections: structuredClone(legacy.connections ?? {}), groups: structuredClone(legacy.groups ?? {}) };
+  const legacyTurn = (legacy as { turn?: CollaborationTurn | null }).turn;
+  const turn: CollaborationTurn | null = legacyTurn ? {
+    ...structuredClone(legacyTurn), promptText: legacyTurn.promptText ?? "", agentMarkers: legacyTurn.agentMarkers ?? [], pendingChangeIds: legacyTurn.pendingChangeIds ?? []
+  } : request && request.state !== "answered" ? { id: request.id, status: request.state === "working" ? "working" : "queued", submittedRevision: legacy.revision, createdAt: request.createdAt, promptText: request.instruction ?? "", selectionIds: request.selectionIds, instructionInk: request.ink ?? [], agentMarkers: [], priorityRegions: [], changedElementIds: [], pendingChangeIds: [] } : null;
+  const elements = structuredClone(legacy.elements);
+  const artboardIds = elements.filter((element) => element.artboard || element.semanticRole === "artboard").map((element) => element.id);
+  return { version: 3, revision: legacy.revision, elements, agentElementIds: [...legacy.agentElementIds], request: null, turn, settings: (legacy as { settings?: WhiteboardSettings }).settings ?? defaultSettings(), lastAgentRevision: (legacy as { lastAgentRevision?: number }).lastAgentRevision ?? 0, connections: structuredClone(legacy.connections ?? {}), groups: structuredClone(legacy.groups ?? {}), artboardIds, explanationSequences: [], sources: [] };
 }
 
 export function boardBounds(elements: PageElement[]): { minX: number; minY: number; maxX: number; maxY: number } | null {
@@ -182,13 +237,13 @@ export function operationElement(operation: Extract<CanvasOperation, { type: "cr
   if (operation.type === "create_text") {
     const fontSize = Math.max(12, Math.min(160, operation.fontSize ?? 32));
     const width = operation.width ?? Math.max(80, Math.min(520, operation.text.length * fontSize * 0.58));
-    return { type: "text", id: operation.id ?? id("text"), x: operation.x, baseline: operation.y + fontSize, width, height: estimateTextHeight(operation.text, width, fontSize), fontSize, color: operation.color ?? "#000000", text: operation.text, fontFamily: operation.fontFamily, fontWeight: operation.fontWeight, fontStyle: operation.fontStyle, textDecoration: operation.textDecoration, textAlign: operation.textAlign, blockStyle: operation.blockStyle, highlightColor: operation.highlightColor, renderStyle: operation.renderStyle, semanticRole: operation.semanticRole } satisfies TextElement;
+    return { type: "text", id: operation.id ?? id("text"), x: operation.x, baseline: operation.y + fontSize, width, height: estimateTextHeight(operation.text, width, fontSize), fontSize, color: operation.color ?? "#000000", text: operation.text, fontFamily: operation.fontFamily, fontWeight: operation.fontWeight, fontStyle: operation.fontStyle, textDecoration: operation.textDecoration, textAlign: operation.textAlign, blockStyle: operation.blockStyle, highlightColor: operation.highlightColor, renderStyle: operation.renderStyle, semanticRole: operation.semanticRole, parentId: operation.parentId, name: operation.name, sourceRefs: operation.sourceRefs } satisfies TextElement;
   }
   if (operation.type === "create_highlight") return { type: "highlight", id: operation.id ?? id("highlight"), x1: operation.x, x2: operation.x + operation.width, y: operation.y, points: operation.points?.map((point) => ({ ...point, pressure: point.pressure ?? .5 })), size: operation.size ?? 28, color: operation.color ?? "#ffd84d", opacity: operation.opacity ?? 0.28 };
   if (operation.type === "create_arrow") return { type: "shape", id: operation.id ?? id("arrow"), kind: "arrow", points: [{ ...operation.from, pressure: 0.5 }, { ...operation.to, pressure: 0.5 }], color: operation.color ?? "#000000", size: operation.strokeWidth ?? 3, closed: false, startArrow: operation.arrowHeads === "start" || operation.arrowHeads === "both", endArrow: operation.arrowHeads !== "start", lineStyle: operation.lineStyle } satisfies ShapeElement;
   if (operation.type === "create_stroke") return { type: "stroke", id: operation.id ?? id("stroke"), color: operation.color ?? "#000000", size: operation.size ?? 3, pressureSensitivity: 0.65, points: operation.points.map((point) => ({ ...point, pressure: point.pressure ?? 0.5 })) };
   if (operation.type === "create_polygon") return { type: "shape", id: operation.id ?? id("polygon"), kind: operation.closed === false ? "line" : "polygon", points: operation.points.map((point) => ({ ...point, pressure: point.pressure ?? 0.5 })), color: operation.color ?? "#000000", size: operation.strokeWidth ?? 3, closed: operation.closed !== false, fillColor: operation.fillColor ?? "#ffffff", fillOpacity: operation.fillOpacity ?? 0 } satisfies ShapeElement;
-  return { type: "shape", id: operation.id ?? id("shape"), kind: operation.kind, points: [{ x: operation.x, y: operation.y, pressure: 0.5 }, { x: operation.x + operation.width, y: operation.y + operation.height, pressure: 0.5 }], color: operation.color ?? "#000000", size: operation.strokeWidth ?? 3, closed: true, fillColor: operation.fillColor ?? "#c0c0c0", fillOpacity: operation.fillOpacity ?? (operation.filled ? 0.3 : 0), radius: operation.kind === "rectangle" ? Math.max(0, operation.radius ?? 0) : undefined, lineStyle: operation.lineStyle } satisfies ShapeElement;
+  return { type: "shape", id: operation.id ?? id("shape"), kind: operation.kind, points: [{ x: operation.x, y: operation.y, pressure: 0.5 }, { x: operation.x + operation.width, y: operation.y + operation.height, pressure: 0.5 }], color: operation.color ?? "#000000", size: operation.strokeWidth ?? 3, closed: true, fillColor: operation.fillColor ?? "#c0c0c0", fillOpacity: operation.fillOpacity ?? (operation.filled ? 0.3 : 0), radius: operation.kind === "rectangle" ? Math.max(0, operation.radius ?? 0) : undefined, lineStyle: operation.lineStyle, semanticRole: operation.semanticRole, parentId: operation.parentId, name: operation.name } satisfies ShapeElement;
 }
 
 export function estimateTextHeight(text: string, width: number, fontSize: number): number {
@@ -198,7 +253,7 @@ export function estimateTextHeight(text: string, width: number, fontSize: number
 }
 
 export function elementSummary(element: PageElement): Record<string, unknown> {
-  const bounds = elementBounds(element); const base = { id: element.id, type: element.type, bounds, locked: element.locked ?? false, semanticRole: element.semanticRole ?? null, renderStyle: element.renderStyle ?? "clean", opacity: element.opacity ?? 1, agentAttached: element.agentAttached ?? false };
+  const bounds = elementBounds(element); const base = { id: element.id, type: element.type, bounds, name: element.name ?? null, parentId: element.parentId ?? null, artboard: element.artboard ?? null, sourceRefs: element.sourceRefs ?? [], locked: element.locked ?? false, semanticRole: element.semanticRole ?? null, renderStyle: element.renderStyle ?? "clean", opacity: element.opacity ?? 1, agentAttached: element.agentAttached ?? false };
   if (element.type === "text") return { ...base, text: element.text, fontSize: element.fontSize, color: element.color, width: element.width, height: element.height, fontFamily: element.fontFamily ?? "sans", fontWeight: element.fontWeight ?? 400, fontStyle: element.fontStyle ?? "normal", textDecoration: element.textDecoration ?? "none", textAlign: element.textAlign ?? "left", blockStyle: element.blockStyle ?? "body", highlightColor: element.highlightColor ?? null };
   if (element.type === "shape") return { ...base, kind: element.kind, points: element.points, color: element.color, strokeWidth: element.size, fillColor: element.fillColor, fillOpacity: element.fillOpacity ?? 0, radius: element.radius ?? 0, lineStyle: element.lineStyle ?? "solid", arrowHeads: element.startArrow ? (element.endArrow === false ? "start" : "both") : "end" };
   if (element.type === "highlight") return { ...base, x1: element.x1, x2: element.x2, y: element.y, points: element.points ?? null, size: element.size, color: element.color, opacity: element.opacity };
@@ -234,6 +289,78 @@ export function lassoElements(elements: PageElement[], polygon: InkPoint[]): str
     }
     return false;
   }).map((element) => element.id);
+}
+
+function interpolatePoint(a: InkPoint, b: InkPoint, t: number): InkPoint {
+  return {
+    x: a.x + (b.x - a.x) * t,
+    y: a.y + (b.y - a.y) * t,
+    pressure: (a.pressure ?? .5) + ((b.pressure ?? .5) - (a.pressure ?? .5)) * t,
+    time: a.time !== undefined && b.time !== undefined ? a.time + (b.time - a.time) * t : undefined
+  };
+}
+
+/** Split a sampled ink path wherever a circular eraser intersects it. */
+export function erasePolyline(points: InkPoint[], centre: InkPoint, radius: number): InkPoint[][] {
+  if (points.length < 2 || radius <= 0) return points.length > 1 ? [points.map((point) => ({ ...point }))] : [];
+  const output: InkPoint[][] = []; let current: InkPoint[] = [];
+  const push = (point: InkPoint): void => { const previous = current.at(-1); if (!previous || Math.hypot(previous.x - point.x, previous.y - point.y) > .001) current.push(point); };
+  const flush = (): void => { if (current.length > 1) output.push(current); current = []; };
+  for (let index = 1; index < points.length; index += 1) {
+    const a = points[index - 1]; const b = points[index]; const dx = b.x - a.x; const dy = b.y - a.y;
+    const fx = a.x - centre.x; const fy = a.y - centre.y; const aa = dx * dx + dy * dy;
+    const cuts = [0, 1];
+    if (aa > .000001) {
+      const bb = 2 * (fx * dx + fy * dy); const cc = fx * fx + fy * fy - radius * radius; const discriminant = bb * bb - 4 * aa * cc;
+      if (discriminant >= 0) {
+        const root = Math.sqrt(discriminant); const left = (-bb - root) / (2 * aa); const right = (-bb + root) / (2 * aa);
+        if (left > 0 && left < 1) cuts.push(left); if (right > 0 && right < 1) cuts.push(right);
+      }
+    }
+    cuts.sort((left, right) => left - right);
+    for (let cut = 1; cut < cuts.length; cut += 1) {
+      const from = cuts[cut - 1]; const to = cuts[cut]; const midpoint = interpolatePoint(a, b, (from + to) / 2);
+      const outside = Math.hypot(midpoint.x - centre.x, midpoint.y - centre.y) > radius;
+      if (outside) { push(interpolatePoint(a, b, from)); push(interpolatePoint(a, b, to)); } else flush();
+    }
+  }
+  flush(); return output;
+}
+
+/** Returns null when untouched, otherwise the replacement segments (possibly empty). */
+export function eraseInkElement(element: PageElement, centre: InkPoint, radius: number): PageElement[] | null {
+  if (element.type !== "stroke" && (element.type !== "highlight" || !element.points?.length)) return null;
+  const points = element.type === "stroke" ? element.points : element.points!; const effectiveRadius = radius + element.size / 2;
+  const segments = erasePolyline(points, centre, effectiveRadius);
+  const originalLength = points.slice(1).reduce((sum, point, index) => sum + Math.hypot(point.x - points[index].x, point.y - points[index].y), 0);
+  const remainingLength = segments.reduce((total, segment) => total + segment.slice(1).reduce((sum, point, index) => sum + Math.hypot(point.x - segment[index].x, point.y - segment[index].y), 0), 0);
+  if (Math.abs(originalLength - remainingLength) < .001) return null;
+  return segments.map((segment, index) => {
+    const copy = structuredClone(element); copy.id = index === 0 ? element.id : `${element.id}-part-${crypto.randomUUID()}`; copy.points = segment;
+    if (copy.type === "highlight") { copy.x1 = segment[0].x; copy.x2 = segment.at(-1)!.x; copy.y = segment.reduce((sum, point) => sum + point.y, 0) / segment.length; }
+    return copy;
+  });
+}
+
+function relativeLuminance(hex: string): number | null {
+  if (!/^#[0-9a-f]{6}$/i.test(hex)) return null; const values = [1, 3, 5].map((index) => Number.parseInt(hex.slice(index, index + 2), 16) / 255).map((value) => value <= .03928 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4);
+  return values[0] * .2126 + values[1] * .7152 + values[2] * .0722;
+}
+
+export function lintBoard(document: WhiteboardDocument): BoardLintIssue[] {
+  const issues: BoardLintIssue[] = []; const elements = document.elements; const byId = new Map(elements.map((element) => [element.id, element]));
+  for (const element of elements) {
+    const bounds = elementBounds(element); const width = bounds.maxX - bounds.minX; const height = bounds.maxY - bounds.minY;
+    if (element.type === "text" && element.height !== undefined && estimateTextHeight(element.text, element.width, element.fontSize) > element.height + 2) issues.push({ code: "text-overflow", severity: "warning", elementIds: [element.id], message: "Text überschreitet sein Textfeld.", suggestedFix: "Textfeld vergrößern oder Schriftgröße reduzieren." });
+    if (["button", "input", "checkbox", "radio", "switch", "select", "tab"].includes(element.semanticRole ?? "") && (width < 44 || height < 44)) issues.push({ code: "small-target", severity: "warning", elementIds: [element.id], message: "Interaktionsfläche ist kleiner als 44 × 44.", suggestedFix: "Bedienfläche oder unsichtbare Trefferfläche vergrößern." });
+    if (element.parentId) {
+      const parent = byId.get(element.parentId); if (parent) { const frame = elementBounds(parent); if (bounds.minX < frame.minX || bounds.minY < frame.minY || bounds.maxX > frame.maxX || bounds.maxY > frame.maxY) issues.push({ code: "off-artboard", severity: "warning", elementIds: [element.id, parent.id], message: "Element liegt teilweise außerhalb seines Artboards.", suggestedFix: "Element in das Artboard verschieben oder Clipping bewusst aktivieren." }); }
+    }
+    if (element.type === "text" && element.parentId) {
+      const parent = byId.get(element.parentId); if (parent?.type === "shape" && parent.fillOpacity && parent.fillOpacity > .7 && parent.fillColor) { const foreground = relativeLuminance(element.color); const background = relativeLuminance(parent.fillColor); if (foreground !== null && background !== null) { const ratio = (Math.max(foreground, background) + .05) / (Math.min(foreground, background) + .05); if (ratio < 4.5) issues.push({ code: "low-contrast", severity: "warning", elementIds: [element.id, parent.id], message: `Textkontrast ist mit ${ratio.toFixed(1)}:1 zu niedrig.`, suggestedFix: "Text- oder Hintergrundfarbe kontrastreicher wählen." }); } }
+    }
+  }
+  return issues.slice(0, 80);
 }
 
 function segmentsIntersect(a: InkPoint, b: InkPoint, c: InkPoint, d: InkPoint): boolean {

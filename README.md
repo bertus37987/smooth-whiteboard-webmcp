@@ -10,13 +10,13 @@ This project turns the existing Smooth Handwriting vector canvas into a standalo
 
 - Infinite, coordinate-based canvas with cursor-centred zoom and free pan
 - Low-latency freehand input using coalesced pointer events; no handwriting model runs while the pen is down
-- Pen-first tools for freehand ink, transient AI ink, smart marker, shapes, arrows, rich text, notes, tables, images, lasso and erasing
+- Pen-first human tools for freehand ink, transient AI ink, smart marker, shapes, arrows, rich text, notes, images, artboards, lasso and pixel erasing; tables are deliberately agent-only
 - Selection, edge-aware multi-element lasso, moving, eight-handle group resizing, duplication, layer ordering and deletion
 - Plain resizable canvas text fields with headings, bullets, numbering, checklists, quotes, code and math styles; sticky notes remain a separate tool
 - Sticky notes can be marked with the paperclip action and become an explicit priority region in the next agent turn
 - Smart labelled connectors that stay attached to object edges when either endpoint moves or resizes
 - Grouping, alignment and equal-gap distribution for agent-created or human-created layouts
-- Undo, redo, local browser persistence and JSON import/export
+- Undo, redo, local browser persistence, JSON import and PNG/SVG/multi-page PDF/JSON export
 - One arrow submit bound to AI ink, lasso selection, recent highlights and recent edits—no embedded chat bar
 - Blue glowing AI Pen: draw spatial instructions for the agent without adding permanent canvas ink
 - Alternating Human ↔ Agent turns with a wait tool, lease token and stale-revision protection
@@ -24,7 +24,7 @@ This project turns the existing Smooth Handwriting vector canvas into a standalo
 - Agent typography (sans, serif, mono and handwriting roles), text alignment/weight/style, text highlighting, filled shapes, rounded corners, line styles and one- or two-headed arrows
 - Structured editable visuals: study notes, explainers, timelines, comparisons, hierarchies, UI wireframes, flowcharts, mindmaps, research briefs, calculations and plots
 - Optional English handwriting assistance using the browser/OS recognizer. It runs locally after pen-up, never replaces visible ink and can be disabled; unsupported browsers retain only gentle geometric smoothing
-- Human-editable agent output with a single Accept / Undo decision
+- Agent output appears as one neutral dashed proposal batch with an atomic Accept / Reject decision; rejecting restores the complete pre-agent state
 - Rounded pen-first black, white and grey interface with cache-safe high-contrast icons, contextual selection actions and no logo or filler content
 
 ## WebMCP interface
@@ -36,9 +36,9 @@ The app registers eight tools through `document.modelContext`:
 3. `inspect_whiteboard` reads the latest board or its prioritized human context.
 4. `focus_whiteboard_region` moves the shared camera to a relevant region.
 5. `publish_agent_plan` exposes one concise next-step line before editing.
-6. `apply_whiteboard_changes` creates and edits text, notes, tables, frames, highlights, shapes, arrows and custom paths.
-7. `create_structured_visual` compiles higher-level learning, diagram, data and UI layouts into ordinary editable objects.
-8. `complete_whiteboard_contribution` ends the turn and exposes Accept / Undo to the human.
+6. `apply_whiteboard_changes` creates and edits text, notes, agent-only tables, artboards, icons, highlights, filled shapes, arrows, custom paths, step sequences and temporary red agent comments.
+7. `create_structured_visual` compiles higher-level learning, diagram, data, UI-mockup and guided-explanation layouts into ordinary editable objects.
+8. `complete_whiteboard_contribution` ends the turn and exposes Accept / Reject to the human.
 
 The board state—not an agent's previous output—is always the source of truth. Agent-created items are normal canvas items, so the human can move, resize, rewrite or remove them before the next inspection.
 

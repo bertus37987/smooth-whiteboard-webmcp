@@ -11,16 +11,16 @@ Smooth Whiteboard is a pen-first shared visual workspace. The human and a browse
 3. The agent inspects the latest revision before every change.
 4. The agent either edits precise existing objects or composes a structured visual.
 5. Changes appear progressively on the live canvas.
-6. The human accepts, undoes or directly edits the result.
+6. The result is shown as one neutral proposal batch. The human accepts it or rejects it atomically; after acceptance it is normal editable canvas content.
 7. The next agent turn starts from that human-edited state.
 
 ## Agent capability surface
 
 The WebMCP API intentionally stays small while covering the complete visual workflow:
 
-- `inspect_whiteboard`: reads the current revision, viewport, selection, instruction, transient AI-Pen coordinates, groups and editable object geometry.
-- `apply_whiteboard_changes`: low-level precision editing for styled text, text highlights, colors, strokes, filled shapes, arrows, smart connectors, movement, resizing, styling, grouping, duplication, alignment, distribution, layers and deletion.
-- `create_structured_visual`: high-level composition for UI wireframes, flowcharts, mindmaps, research briefs, calculation steps and plotted graphs. It compiles to normal low-level canvas objects.
+- `inspect_whiteboard`: reads the current revision, viewport, prompt, selection, transient AI-Pen coordinates, artboards, groups, explanation sequences, lint findings and editable object geometry.
+- `apply_whiteboard_changes`: low-level precision editing for styled text, agent-only tables, text highlights, colors, icons, strokes, filled shapes, arrows, smart connectors, artboards, parent relationships, temporary red Agent Marker comments, movement, resizing, styling, grouping, duplication, alignment, distribution, layers and deletion.
+- `create_structured_visual`: high-level composition for UI mockups, guided visual explanations, flowcharts, mindmaps, research briefs, calculation steps and plotted graphs. It compiles to normal low-level canvas objects.
 - `complete_whiteboard_contribution`: ends a progressive contribution and exposes the human Accept/Undo decision.
 
 This split lets the agent create custom drawings through points and strokes without requiring a special tool for every possible picture. Rewriting or shortening selected text uses `update_text`; rearranging an explanation uses movement, grouping, alignment and distribution.
@@ -73,22 +73,39 @@ This split lets the agent create custom drawings through points and strokes with
 - study notes, timelines, comparisons, hierarchies and visual explainers
 - priority regions for AI ink, selection, highlights and recent edits
 
-### 0.13 — export and precision controls
+### 0.13 — rich canvas controls
 
 - snapping guides, equal-spacing hints and keyboard nudging
 - stroke-width/fill/opacity inspector
 - multi-select group/ungroup controls
 - richer graph ticks, legends and grid lines
-- PNG, SVG and paginated PDF export
+- initial export and precision controls
 
-### 1.0 — finished challenge release
+### 0.14 — proposal and pen workflow
 
-- complete Human → Lasso/Canvas instruction → Agent → Human edit loop
-- tested UI, flowchart, mindmap, research, math and graph demos
-- public cross-platform deployment with cache-safe assets
-- resilient persistence and document migrations
-- accessibility and responsive-layout audit
-- optional non-destructive handwriting improvement remains off by default until it passes pen-latency and stroke-preservation tests
+- one-line grouped human toolbar; no human table tool
+- persistent Human Pen, Marker and AI Pen modes without switching back to selection
+- segmenting pixel eraser for Human Pen, freehand marker and blue instruction ink
+- compact Word-like prompt field combined with spatial AI-Pen instructions
+- full-batch agent proposal review with durable pre-agent rollback
+
+### 0.15 — visual agent workspace
+
+- separate red-white Agent Marker for temporary comments; excluded from the artifact and all exports
+- artboards with parented canvas elements, mobile/desktop presets and multi-page PDF export
+- PNG 2×, vector SVG, multi-page PDF and editable JSON export; only permanent canvas content is rendered
+- agent icons, richer UI mockups, handwriting-style agent text and guided explanation sequences
+- UI lint inspection for text overflow, off-artboard content, small interaction targets and low contrast
+- responsive one-line toolbar, 44 px desktop targets and grouped shape/content menus
+
+### 1.0 — release hardening still planned
+
+- accessibility audit with screen-reader announcements and full keyboard object navigation
+- snapping guides, keyboard nudging, group/ungroup buttons and a richer property inspector
+- import of SVG/PDF pages in addition to the existing image/JSON imports
+- source cards and citation verification for research-heavy agent explanations
+- explicit autosave recovery/version history beyond the current local snapshot and undo stack
+- optional non-destructive handwriting improvement remains user-controlled and must continue to pass pen-latency and stroke-preservation tests
 
 ## Completion gates
 
@@ -96,6 +113,6 @@ This split lets the agent create custom drawings through points and strokes with
 - Every structured visual decomposes into ordinary editable elements.
 - Moving a grouped node keeps its label; moving a connected node keeps its connector.
 - The submit arrow works with an empty canvas, AI ink and a lasso selection.
-- Agent changes can be accepted, undone or manually edited.
+- Agent changes can be accepted or rejected atomically and become manually editable after acceptance.
 - Chrome shows every tool icon at normal and high-DPI scaling.
 - The public deployment passes typecheck, tests, build and browser smoke tests.

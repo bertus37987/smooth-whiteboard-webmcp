@@ -1,7 +1,7 @@
 import { PageElement, elementBounds } from "../src/document";
 import { InkPoint } from "../src/strokes";
 import { cachedImage, drawBoardElement } from "../src/rendering";
-import { Camera, boardBounds } from "./model";
+import { AgentMarkerAnnotation, Camera, ExplanationSequence, boardBounds } from "./model";
 
 export type SelectionHandle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
 
@@ -10,7 +10,9 @@ export class BoardRenderer {
   selectionIds = new Set<string>();
   lasso: InkPoint[] = [];
   instructionInk: InkPoint[][] = [];
+  agentMarkers: AgentMarkerAnnotation[] = [];
   activeAgentIds = new Set<string>();
+  explanationState: { sequence: ExplanationSequence; index: number } | null = null;
   private frame = 0;
   private resizeObserver: ResizeObserver;
 
@@ -61,6 +63,14 @@ export class BoardRenderer {
     }) ?? null;
   }
 
+  agentMarkerAt(point: InkPoint): AgentMarkerAnnotation | null {
+    const radius = 18 / this.camera.zoom;
+    return [...this.agentMarkers].reverse().find((marker) => {
+      if (marker.points?.some((candidate) => Math.hypot(candidate.x - point.x, candidate.y - point.y) <= radius)) return true;
+      return marker.x !== undefined && marker.y !== undefined && Math.abs(point.x - marker.x) <= 170 / this.camera.zoom && Math.abs(point.y - marker.y) <= 90 / this.camera.zoom;
+    }) ?? null;
+  }
+
   selectionHandleAt(point: InkPoint): SelectionHandle | null {
     const bounds = this.selectionBounds(); if (!bounds) return null; const radius = 12 / this.camera.zoom;
     const midX = (bounds.minX + bounds.maxX) / 2; const midY = (bounds.minY + bounds.maxY) / 2;
@@ -87,15 +97,19 @@ export class BoardRenderer {
     const context = this.canvas.getContext("2d"); if (!context) return;
     context.setTransform(ratio, 0, 0, ratio, 0, 0); context.clearRect(0, 0, rect.width, rect.height); this.drawGrid(context, rect.width, rect.height);
     context.save(); context.translate(this.camera.x, this.camera.y); context.scale(this.camera.zoom, this.camera.zoom);
+    const step = this.explanationState; const sequenceIds = new Set(step?.sequence.steps.flatMap((item) => item.revealElementIds) ?? []); const revealedIds = new Set(step ? step.sequence.steps.slice(0, step.index + 1).flatMap((item) => item.revealElementIds) : []); const focusIds = new Set(step?.sequence.steps[step.index]?.focusElementIds ?? []);
     for (const element of this.elements()) {
+      if (step && sequenceIds.has(element.id) && !revealedIds.has(element.id)) continue;
       if (this.connectionLabelIds().has(element.id) && element.type === "text") this.drawConnectionLabel(context, element);
+      context.save(); if (step && revealedIds.has(element.id) && !focusIds.has(element.id)) context.globalAlpha = .22;
       if (element.type === "image") {
         const image = cachedImage(element, () => this.request()); if (image.complete && image.naturalWidth > 0) context.drawImage(image, element.x, element.y, element.width, element.height);
-      } else { context.save(); context.globalAlpha = element.opacity ?? 1; drawBoardElement(context, element); context.restore(); }
+      } else { context.save(); context.globalAlpha *= element.opacity ?? 1; drawBoardElement(context, element); context.restore(); }
+      context.restore();
       if (element.agentAttached && element.semanticRole === "note") this.drawAttachmentBadge(context, element);
     }
-    this.drawAgentContributionHalo(context);
-    this.drawInstructionInk(context); this.drawSelection(context); this.drawLasso(context); context.restore();
+    this.drawPendingAgentChanges(context);
+    this.drawInstructionInk(context); this.drawAgentMarkers(context); this.drawSelection(context); this.drawLasso(context); context.restore();
   }
 
   private drawInstructionInk(context: CanvasRenderingContext2D): void {
@@ -107,20 +121,30 @@ export class BoardRenderer {
     context.restore();
   }
 
-  private drawAgentHalo(context: CanvasRenderingContext2D, element: PageElement): void {
-    const box = elementBounds(element); const pad = 8 / this.camera.zoom;
-    const x = box.minX - pad; const y = box.minY - pad; const width = box.maxX - box.minX + pad * 2; const height = box.maxY - box.minY + pad * 2;
-    context.save(); context.lineCap = "round"; context.lineJoin = "round"; context.setLineDash([7 / this.camera.zoom, 5 / this.camera.zoom]);
-    context.strokeStyle = "rgba(255,188,196,.44)"; context.lineWidth = 10 / this.camera.zoom; context.shadowColor = "rgba(255,154,166,.78)"; context.shadowBlur = 24 / this.camera.zoom; context.strokeRect(x, y, width, height);
-    context.strokeStyle = "rgba(255,255,255,.96)"; context.lineWidth = 5 / this.camera.zoom; context.shadowBlur = 7 / this.camera.zoom; context.strokeRect(x, y, width, height);
-    context.strokeStyle = "#ff8796"; context.lineWidth = 1.8 / this.camera.zoom; context.shadowBlur = 0; context.strokeRect(x, y, width, height); context.setLineDash([]);
-    context.fillStyle = "#ffffff"; context.beginPath(); context.arc(box.maxX + pad, box.minY - pad, 5 / this.camera.zoom, 0, Math.PI * 2); context.fill(); context.strokeStyle = "#ff8796"; context.stroke(); context.restore();
+  private drawPendingAgentChanges(context: CanvasRenderingContext2D): void {
+    const active = this.elements().filter((element) => this.activeAgentIds.has(element.id)); const box = boardBounds(active); if (!box) return;
+    const pad = 9 / this.camera.zoom; context.save(); context.strokeStyle = "rgba(64,64,64,.72)"; context.lineWidth = 1.5 / this.camera.zoom; context.setLineDash([6 / this.camera.zoom, 5 / this.camera.zoom]); context.strokeRect(box.minX - pad, box.minY - pad, box.maxX - box.minX + pad * 2, box.maxY - box.minY + pad * 2); context.setLineDash([]);
+    const label = "Vorschlag"; context.font = `${12 / this.camera.zoom}px system-ui`; const width = context.measureText(label).width + 14 / this.camera.zoom; const height = 23 / this.camera.zoom; const x = box.minX - pad; const y = box.minY - pad - height - 4 / this.camera.zoom; context.fillStyle = "rgba(255,255,255,.98)"; context.strokeStyle = "rgba(64,64,64,.45)"; context.beginPath(); context.roundRect(x, y, width, height, 7 / this.camera.zoom); context.fill(); context.stroke(); context.fillStyle = "#404040"; context.textBaseline = "middle"; context.fillText(label, x + 7 / this.camera.zoom, y + height / 2); context.restore();
   }
 
-  private drawAgentContributionHalo(context: CanvasRenderingContext2D): void {
-    const active = this.elements().filter((element) => this.activeAgentIds.has(element.id)); const box = boardBounds(active); if (!box) return;
-    const proxy: PageElement = { type: "shape", id: "agent-contribution", kind: "rectangle", points: [{ x: box.minX, y: box.minY, pressure: .5 }, { x: box.maxX, y: box.maxY, pressure: .5 }], color: "#ff8796", size: 1, closed: true };
-    this.drawAgentHalo(context, proxy);
+  private drawAgentMarkers(context: CanvasRenderingContext2D): void {
+    if (!this.agentMarkers.length) return; context.save(); context.lineCap = "round"; context.lineJoin = "round";
+    const paths = this.agentMarkers.filter((marker) => marker.points?.length);
+    const drawPaths = (): void => { for (const marker of paths) { const points = marker.points!; context.beginPath(); context.moveTo(points[0].x, points[0].y); for (const point of points.slice(1)) context.lineTo(point.x, point.y); context.stroke(); } };
+    context.strokeStyle = "rgba(255,178,188,.38)"; context.lineWidth = 15 / this.camera.zoom; context.shadowColor = "rgba(255,150,164,.78)"; context.shadowBlur = 26 / this.camera.zoom; drawPaths();
+    context.strokeStyle = "rgba(255,255,255,.96)"; context.lineWidth = 7 / this.camera.zoom; context.shadowBlur = 8 / this.camera.zoom; drawPaths();
+    context.strokeStyle = "#e32636"; context.lineWidth = 2.2 / this.camera.zoom; context.shadowBlur = 0; drawPaths();
+    for (const marker of this.agentMarkers) if (marker.text && marker.x !== undefined && marker.y !== undefined) {
+      const unit = 1 / this.camera.zoom; const fontSize = 15 * unit; const maxWidth = 310 * unit; const paddingX = 18 * unit; const paddingY = 10 * unit; const lineHeight = 20 * unit;
+      context.font = `${fontSize}px 'Segoe Print', cursive`; const lines: string[] = []; let line = "";
+      for (const word of marker.text.split(/\s+/)) { const candidate = line ? `${line} ${word}` : word; if (line && context.measureText(candidate).width > maxWidth) { lines.push(line); line = word; } else line = candidate; }
+      if (line) lines.push(line); const visible = lines.slice(0, 4); if (lines.length > visible.length) visible[visible.length - 1] = `${visible.at(-1)!.replace(/[.…]*$/, "")} …`;
+      const width = Math.min(maxWidth, Math.max(90 * unit, ...visible.map((item) => context.measureText(item).width))) + paddingX * 2; const height = visible.length * lineHeight + paddingY * 2; const x = marker.x; const y = marker.y - fontSize;
+      context.shadowColor = "rgba(227,38,54,.32)"; context.shadowBlur = 20 * unit; context.fillStyle = "rgba(255,255,255,.97)"; context.strokeStyle = "rgba(227,38,54,.72)"; context.lineWidth = 1.5 * unit; context.beginPath(); context.roundRect(x, y, width, height, 13 * unit); context.fill(); context.shadowBlur = 0; context.stroke();
+      context.fillStyle = "#e32636"; context.beginPath(); context.arc(x + 10 * unit, y + 11 * unit, 3.2 * unit, 0, Math.PI * 2); context.fill(); context.fillStyle = "#8d1522"; context.textBaseline = "top";
+      visible.forEach((item, index) => context.fillText(item, x + paddingX, y + paddingY + index * lineHeight));
+    }
+    context.restore();
   }
 
   private drawAttachmentBadge(context: CanvasRenderingContext2D, element: PageElement): void {

@@ -1,8 +1,21 @@
 import { PageElement } from "../src/document";
 import { CanvasOperation, WhiteboardDocument, boardBounds, cloneBoard, connectionPoints, emptyBoard, estimateTextHeight, migrateBoard, operationElement, scaleElement, translateElement } from "./model";
 
-const STORAGE_KEY = "smooth-whiteboard-v2";
+const STORAGE_KEY = "smooth-whiteboard-v3";
 const LEGACY_STORAGE_KEY = "smooth-whiteboard-v1";
+const PRE_AGENT_STORAGE_KEY = "smooth-whiteboard-pre-agent-v1";
+
+function iconSegments(name: Extract<CanvasOperation, { type: "create_icon" }>["name"], x: number, y: number, size: number): Array<Array<{ x: number; y: number; pressure: number }>> {
+  const point = (px: number, py: number) => ({ x: x + px * size, y: y + py * size, pressure: .5 });
+  if (name === "check") return [[point(.08, .52), point(.38, .82), point(.92, .16)]];
+  if (name === "close") return [[point(.14, .14), point(.86, .86)], [point(.86, .14), point(.14, .86)]];
+  if (name === "plus") return [[point(.5, .08), point(.5, .92)], [point(.08, .5), point(.92, .5)]];
+  if (name === "minus") return [[point(.08, .5), point(.92, .5)]];
+  if (name === "menu") return [[point(.08, .22), point(.92, .22)], [point(.08, .5), point(.92, .5)], [point(.08, .78), point(.92, .78)]];
+  if (name === "search") return [[...Array.from({ length: 17 }, (_, index) => { const angle = index / 16 * Math.PI * 2; return point(.38 + Math.cos(angle) * .28, .38 + Math.sin(angle) * .28); })], [point(.58, .58), point(.92, .92)]];
+  if (name === "user") return [[...Array.from({ length: 17 }, (_, index) => { const angle = index / 16 * Math.PI * 2; return point(.5 + Math.cos(angle) * .19, .28 + Math.sin(angle) * .19); })], [point(.12, .92), point(.18, .66), point(.5, .55), point(.82, .66), point(.88, .92)]];
+  return [[point(.5, .9), point(.12, .5), point(.16, .2), point(.38, .1), point(.5, .3), point(.62, .1), point(.84, .2), point(.88, .5), point(.5, .9)]];
+}
 
 export class BoardStore extends EventTarget {
   document: WhiteboardDocument;
@@ -12,9 +25,12 @@ export class BoardStore extends EventTarget {
 
   constructor() {
     super();
-    try { const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem(LEGACY_STORAGE_KEY) ?? "null") as unknown; this.document = migrateBoard(parsed) ?? emptyBoard(); }
+    try { const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem("smooth-whiteboard-v2") ?? localStorage.getItem(LEGACY_STORAGE_KEY) ?? "null") as unknown; this.document = migrateBoard(parsed) ?? emptyBoard(); }
     catch { this.document = emptyBoard(); }
-    this.document.connections ??= {}; this.document.groups ??= {}; this.refreshConnections(); this.cleanGroups();
+    this.document.connections ??= {}; this.document.groups ??= {}; this.document.artboardIds ??= []; this.document.explanationSequences ??= []; this.document.sources ??= [];
+    try { const snapshot = migrateBoard(JSON.parse(localStorage.getItem(PRE_AGENT_STORAGE_KEY) ?? "null") as unknown); if (snapshot && this.document.turn && ["working", "review"].includes(this.document.turn.status)) this.agentBefore = snapshot; }
+    catch { this.agentBefore = null; }
+    this.refreshConnections(); this.cleanGroups();
   }
 
   checkpoint(): void { this.undoStack.push(cloneBoard(this.document)); if (this.undoStack.length > 100) this.undoStack.shift(); this.redoStack = []; }
@@ -23,7 +39,7 @@ export class BoardStore extends EventTarget {
     this.refreshConnections(); this.cleanGroups(); this.document.revision += 1; localStorage.setItem(STORAGE_KEY, JSON.stringify(this.document)); this.dispatchEvent(new Event("change"));
   }
 
-  replace(document: WhiteboardDocument): void { this.document = cloneBoard(document); this.changed(); }
+  replace(document: WhiteboardDocument): void { this.agentBefore = null; localStorage.removeItem(PRE_AGENT_STORAGE_KEY); this.document = cloneBoard(document); this.changed(); }
 
   undo(): boolean {
     const previous = this.undoStack.pop(); if (!previous) return false;
@@ -36,16 +52,16 @@ export class BoardStore extends EventTarget {
   }
 
   beginAgentContribution(): void {
-    if (!this.agentBefore) this.agentBefore = cloneBoard(this.document);
+    if (!this.agentBefore) { this.agentBefore = cloneBoard(this.document); localStorage.setItem(PRE_AGENT_STORAGE_KEY, JSON.stringify(this.agentBefore)); }
     if (this.document.turn) this.document.turn.status = "working";
   }
 
   acceptAgentContribution(): void {
-    this.agentBefore = null; if (this.document.turn) { this.document.turn.status = "complete"; this.document.turn.instructionInk = []; } this.document.lastAgentRevision = this.document.revision; this.changed();
+    this.agentBefore = null; localStorage.removeItem(PRE_AGENT_STORAGE_KEY); if (this.document.turn) { this.document.turn.status = "complete"; this.document.turn.promptText = ""; this.document.turn.instructionInk = []; this.document.turn.agentMarkers = []; this.document.turn.pendingChangeIds = []; this.document.turn.leaseToken = undefined; } this.document.lastAgentRevision = this.document.revision; this.changed();
   }
 
   undoAgentContribution(): boolean {
-    if (!this.agentBefore) return false; this.document = this.agentBefore; this.agentBefore = null; if (this.document.turn) { this.document.turn.status = "cancelled"; this.document.turn.instructionInk = []; } this.changed(); return true;
+    if (!this.agentBefore) return false; const cancelledTurn = this.document.turn; this.document = this.agentBefore; this.agentBefore = null; localStorage.removeItem(PRE_AGENT_STORAGE_KEY); if (cancelledTurn) this.document.turn = { ...cancelledTurn, status: "cancelled", instructionInk: [], agentMarkers: [], pendingChangeIds: [], leaseToken: undefined }; this.changed(); return true;
   }
 
   hasAgentContribution(): boolean { return this.agentBefore !== null; }
@@ -57,6 +73,7 @@ export class BoardStore extends EventTarget {
   expandGroupIds(ids: string[]): string[] {
     const expanded = new Set(ids); const groups = this.document.groups ?? {};
     for (const id of ids) { const groupId = this.groupIdFor(id); if (groupId) groups[groupId]?.forEach((member) => expanded.add(member)); }
+    let changed = true; while (changed) { changed = false; for (const element of this.document.elements) if (element.parentId && expanded.has(element.parentId) && !expanded.has(element.id)) { expanded.add(element.id); changed = true; } }
     return [...expanded];
   }
 
@@ -78,14 +95,24 @@ export class BoardStore extends EventTarget {
       const element = operationElement(normalized);
       this.document.elements.push(element); created.push(element.id);
       if (source === "agent" && !this.document.agentElementIds.includes(element.id)) this.document.agentElementIds.push(element.id);
+    } else if (operation.type === "create_icon") {
+      const prefix = operation.id ?? `icon-${crypto.randomUUID()}`; const members: string[] = [];
+      for (const [index, points] of iconSegments(operation.name, operation.x, operation.y, Math.max(12, operation.size ?? 32)).entries()) {
+        const element = operationElement({ type: "create_stroke", id: `${prefix}-${index}`, points, size: Math.max(1.5, (operation.size ?? 32) / 12), color: operation.color ?? "#080808" }); element.semanticRole = "icon"; element.parentId = operation.parentId; element.name = operation.name;
+        this.document.elements.push(element); members.push(element.id); created.push(element.id); if (source === "agent") this.document.agentElementIds.push(element.id);
+      }
+      if (members.length > 1) (this.document.groups ??= {})[prefix] = members;
+    } else if (operation.type === "create_agent_marker") {
+      if (source === "agent" && this.document.turn) this.document.turn.agentMarkers.push({ id: operation.id ?? `agent-marker-${crypto.randomUUID()}`, kind: operation.points?.length ? "stroke" : "note", points: operation.points?.map((point) => ({ ...point, pressure: point.pressure ?? .5 })), x: operation.x, y: operation.y, text: operation.text?.slice(0, 300), anchorId: operation.anchorId });
     } else if (operation.type === "create_note") {
       const prefix = operation.id ?? `note-${crypto.randomUUID()}`; const width = Math.max(120, operation.width ?? 320); const height = Math.max(90, operation.height ?? 210);
       const shape = operationElement({ type: "create_shape", id: `${prefix}-card`, kind: "rectangle", x: operation.x, y: operation.y, width, height, color: operation.color ?? "#080808", strokeWidth: 2, fillColor: operation.fillColor ?? "#fff4b8", fillOpacity: 0.72, radius: 18 }); shape.renderStyle = operation.renderStyle ?? (source === "agent" ? "sketch" : "clean"); shape.semanticRole = "note";
       const text = operationElement({ type: "create_text", id: `${prefix}-text`, x: operation.x + 18, y: operation.y + 18, width: width - 36, text: operation.text, fontSize: 24, color: operation.color ?? "#080808", fontFamily: source === "agent" ? "handwriting" : "sans", blockStyle: operation.blockStyle ?? "body", renderStyle: operation.renderStyle, semanticRole: "note-body" });
       this.document.elements.push(shape, text); created.push(shape.id, text.id); (this.document.groups ??= {})[prefix] = [shape.id, text.id]; if (source === "agent") this.document.agentElementIds.push(shape.id, text.id);
     } else if (operation.type === "create_frame") {
-      const prefix = operation.id ?? `frame-${crypto.randomUUID()}`; const shape = operationElement({ type: "create_shape", id: `${prefix}-border`, kind: "rectangle", x: operation.x, y: operation.y, width: operation.width, height: operation.height, color: operation.color ?? "#404040", strokeWidth: 2, fillColor: "#ffffff", fillOpacity: 0.04, radius: 24, lineStyle: "dashed" }); shape.renderStyle = operation.renderStyle; shape.semanticRole = "frame"; this.document.elements.push(shape); created.push(shape.id);
-      if (operation.title) { const label = operationElement({ type: "create_text", id: `${prefix}-title`, x: operation.x + 18, y: operation.y + 12, width: operation.width - 36, text: operation.title, fontSize: 28, color: operation.color ?? "#080808", fontFamily: source === "agent" ? "handwriting" : "sans", fontWeight: 700, blockStyle: "heading-2", semanticRole: "frame-title" }); this.document.elements.push(label); created.push(label.id); }
+      const prefix = operation.id ?? `frame-${crypto.randomUUID()}`; const shape = operationElement({ type: "create_shape", id: `${prefix}-border`, kind: "rectangle", x: operation.x, y: operation.y, width: operation.width, height: operation.height, color: operation.color ?? "#404040", strokeWidth: operation.artboardPreset ? 1.5 : 2, fillColor: operation.backgroundColor ?? "#ffffff", fillOpacity: operation.artboardPreset ? 1 : 0.04, radius: 24, lineStyle: operation.artboardPreset ? "solid" : "dashed", semanticRole: operation.semanticRole ?? (operation.artboardPreset ? "artboard" : "frame"), parentId: operation.parentId, name: operation.name ?? operation.title }); shape.renderStyle = operation.renderStyle; if (operation.artboardPreset) shape.artboard = { preset: operation.artboardPreset, backgroundColor: operation.backgroundColor ?? "#ffffff", clipContent: operation.clipContent ?? false }; this.document.elements.push(shape); created.push(shape.id);
+      if (shape.artboard && !this.document.artboardIds.includes(shape.id)) this.document.artboardIds.push(shape.id);
+      if (operation.title) { const label = operationElement({ type: "create_text", id: `${prefix}-title`, x: operation.x + 18, y: operation.y + 12, width: operation.width - 36, text: operation.title, fontSize: 28, color: operation.color ?? "#080808", fontFamily: source === "agent" ? "handwriting" : "sans", fontWeight: 700, blockStyle: "heading-2", semanticRole: "frame-title", parentId: shape.id }); this.document.elements.push(label); created.push(label.id); }
       (this.document.groups ??= {})[prefix] = [...created]; if (source === "agent") this.document.agentElementIds.push(...created);
     } else if (operation.type === "create_table") {
       const prefix = operation.id ?? `table-${crypto.randomUUID()}`; const rows = Math.max(1, Math.min(20, Math.round(operation.rows))); const columns = Math.max(1, Math.min(12, Math.round(operation.columns))); const cellWidth = operation.width / columns; const cellHeight = operation.height / rows;
@@ -173,9 +200,18 @@ export class BoardStore extends EventTarget {
     } else if (operation.type === "ungroup") {
       if (operation.groupId) delete (this.document.groups ?? {})[operation.groupId];
       if (operation.ids) for (const [groupId, members] of Object.entries(this.document.groups ?? {})) if (members.some((id) => operation.ids!.includes(id))) delete (this.document.groups ?? {})[groupId];
+    } else if (operation.type === "set_parent") {
+      const parent = operation.parentId ? this.document.elements.find((element) => element.id === operation.parentId) : undefined; if (operation.parentId && !parent) return created;
+      for (const element of this.elementsFor(this.expandGroupIds(operation.ids))) if (element.id !== operation.parentId) element.parentId = operation.parentId;
+    } else if (operation.type === "update_artboard") {
+      const element = this.document.elements.find((candidate) => candidate.id === operation.id); if (element?.type === "shape" && (element.artboard || element.semanticRole === "artboard")) { element.semanticRole = "artboard"; element.name = operation.name ?? element.name; element.artboard = { preset: operation.preset ?? element.artboard?.preset ?? "custom", backgroundColor: operation.backgroundColor ?? element.artboard?.backgroundColor ?? "#ffffff", clipContent: operation.clipContent ?? element.artboard?.clipContent ?? false }; element.fillColor = element.artboard.backgroundColor; element.fillOpacity = 1; if (!this.document.artboardIds.includes(element.id)) this.document.artboardIds.push(element.id); }
+    } else if (operation.type === "set_explanation_sequence") {
+      const index = this.document.explanationSequences.findIndex((sequence) => sequence.id === operation.sequence.id); const copy = structuredClone(operation.sequence); if (index >= 0) this.document.explanationSequences[index] = copy; else this.document.explanationSequences.push(copy);
     } else {
       const expanded = this.expandGroupIds(operation.ids); this.document.elements = this.document.elements.filter((element) => !expanded.includes(element.id));
       this.document.agentElementIds = this.document.agentElementIds.filter((id) => !expanded.includes(id));
+      this.document.artboardIds = this.document.artboardIds.filter((id) => !expanded.includes(id));
+      this.document.explanationSequences = this.document.explanationSequences.map((sequence) => ({ ...sequence, steps: sequence.steps.map((step) => ({ ...step, focusElementIds: step.focusElementIds.filter((id) => !expanded.includes(id)), revealElementIds: step.revealElementIds.filter((id) => !expanded.includes(id)) })) })).filter((sequence) => sequence.steps.some((step) => step.focusElementIds.length || step.revealElementIds.length));
     }
     return created;
   }
@@ -208,7 +244,9 @@ export class BoardStore extends EventTarget {
   private cleanGroups(): void {
     const existing = new Set(this.document.elements.map((element) => element.id));
     for (const [groupId, members] of Object.entries(this.document.groups ?? {})) { const valid = [...new Set(members.filter((id) => existing.has(id)))]; if (valid.length > 1) (this.document.groups ?? {})[groupId] = valid; else delete (this.document.groups ?? {})[groupId]; }
+    this.document.artboardIds = [...new Set(this.document.artboardIds.filter((id) => existing.has(id)))];
+    for (const element of this.document.elements) if (element.parentId && !existing.has(element.parentId)) delete element.parentId;
   }
 
-  clear(): void { this.checkpoint(); this.document = emptyBoard(); this.changed(); }
+  clear(): void { this.checkpoint(); this.agentBefore = null; localStorage.removeItem(PRE_AGENT_STORAGE_KEY); this.document = emptyBoard(); this.changed(); }
 }
