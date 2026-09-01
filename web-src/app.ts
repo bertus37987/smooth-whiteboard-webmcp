@@ -506,11 +506,7 @@ export class WhiteboardApp {
   private updateZoom(): void { byId<HTMLSpanElement>("zoom").textContent = `${Math.round(this.renderer.camera.zoom * 100)}%`; }
   private updateContextPrompt(): void {
     const tools = byId<HTMLElement>("selection-tools"); const bounds = this.renderer.selectionBounds(); tools.hidden = !bounds;
-    const selected = this.selectedElements(); const count = this.store.selectionUnitCount([...this.renderer.selectionIds]); const ink = this.renderer.instructionInk.length; const prompt = this.promptInput.value.trim().length > 0;
-    const typeNames: Record<PageElement["type"], string> = { stroke: "Ink", text: "Text", highlight: "Marker", shape: "Shape", image: "Image" }; const selectedKinds = [...new Set(selected.map((element) => element.name ?? (element.artboard ? "Artboard" : typeNames[element.type])))].slice(0, 2);
-    const attachedIds = this.store.document.elements.filter((element) => element.agentAttached).map((element) => element.id); const attachedCount = this.store.selectionUnitCount(attachedIds); const scopes: string[] = [];
-    if (count) scopes.push(`${count} selected${selectedKinds.length ? ` · ${selectedKinds.join(", ")}` : ""}`); if (ink) scopes.push(ink === 1 ? "AI Pen" : `${ink}× AI Pen`); if (attachedCount) scopes.push(`${attachedCount} attached`); if (prompt) scopes.push("Text prompt"); if (!scopes.length) scopes.push("Entire canvas");
-    const scope = byId<HTMLElement>("request-scope"); scope.replaceChildren(...scopes.map((label) => { const chip = document.createElement("span"); chip.textContent = label; chip.title = label; return chip; }));
+    const selected = this.selectedElements(); const prompt = this.promptInput.value.trim().length > 0;
     this.promptDock.classList.toggle("has-prompt", prompt); this.promptInput.style.height = "40px"; const promptHeight = Math.min(112, Math.max(40, this.promptInput.scrollHeight)); this.promptInput.style.height = `${promptHeight}px`; document.documentElement.style.setProperty("--prompt-dock-height", `${this.promptDock.offsetHeight}px`);
     if (!bounds) return;
     const top = this.renderer.screen({ x: (bounds.minX + bounds.maxX) / 2, y: bounds.minY });

@@ -27,6 +27,12 @@
       <div class="toolbar-divider secondary-divider"></div>
       <button type="button" id="undo" class="secondary-action" aria-label="Undo" title="Undo"></button>
       <button type="button" id="redo" class="secondary-action" aria-label="Redo" title="Redo"></button>
+      <section class="utility" aria-label="View and files">
+        <button type="button" id="fit" aria-label="Fit view" title="Fit view"></button><span id="zoom">100%</span><span id="revision">r0</span>
+        <button type="button" id="export-toggle" aria-label="Export" title="Export">Export</button>
+        <label class="file-label">Import<input id="import-json" type="file" accept="application/json"></label>
+        <button type="button" id="settings-toggle" aria-label="Settings" title="Settings"></button><button type="button" id="clear" aria-label="Clear whiteboard" title="Clear whiteboard"></button>
+      </section>
     </nav>
     <section id="shapes-popover" class="popover tool-popover" hidden aria-label="Shapes">
       <button type="button" data-tool="rectangle" aria-label="Rectangle"></button>
@@ -55,12 +61,6 @@
       <label>Hex <input id="color-hex" type="text" value="#080808" maxlength="7" spellcheck="false"></label>
       <label>Opacity <input id="color-opacity" type="range" min="10" max="100" value="100"></label>
     </section>
-    <section class="utility" aria-label="View and files">
-      <button type="button" id="fit" aria-label="Fit view" title="Fit view"></button><span id="zoom">100%</span><span id="revision">r0</span>
-      <button type="button" id="export-toggle" aria-label="Export" title="Export">Export</button>
-      <label class="file-label">Import<input id="import-json" type="file" accept="application/json"></label>
-      <button type="button" id="settings-toggle" aria-label="Settings" title="Settings"></button><button type="button" id="clear" aria-label="Clear whiteboard" title="Clear whiteboard"></button>
-    </section>
     <section id="export-popover" class="popover export-popover" hidden><strong>Export</strong><button type="button" data-export="png">PNG · 2×</button><button type="button" data-export="svg">SVG · Vector</button><button type="button" data-export="pdf">PDF · Artboards</button><button type="button" data-export="json">JSON · Editable</button><small>AI Pen, Agent markers and proposal outlines are not exported.</small></section>
     <section id="settings-popover" class="popover settings-popover" hidden>
       <h2>Writing tools</h2><label><input id="setting-smoothing" type="checkbox"> Smooth input</label><label><input id="setting-pressure" type="checkbox"> Pen pressure</label><label><input id="setting-auto-shape" type="checkbox"> Improve shapes</label><label><input id="setting-smart-highlight" type="checkbox"> Snap marker to content</label><label><input id="setting-english-assist" type="checkbox"> Make English handwriting agent-readable</label><p id="handwriting-support">Runs locally in your browser; no visible text is exchanged.</p>
@@ -71,7 +71,6 @@
       <button type="button" id="attach-agent" class="attach-action" aria-label="Attach for agent"></button><button type="button" id="delete-selection" aria-label="Delete selection"></button>
     </section>
     <section id="prompt-dock" class="prompt-dock" aria-label="Send whiteboard to agent">
-      <div class="agent-context"><span class="dock-label">Agent receives</span><div id="request-scope" class="scope-chips"><span>Entire canvas</span></div></div>
       <label class="instruction-control"><textarea id="instruction-prompt" rows="1" maxlength="4000" aria-label="Instruction for agent"></textarea></label>
       <button type="button" id="submit-turn" class="submit-arrow" aria-label="Send to agent" title="Send to agent · Ctrl+Enter"></button>
     </section>
