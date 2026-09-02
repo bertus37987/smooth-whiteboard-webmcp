@@ -361,48 +361,72 @@ export class WhiteboardApp {
     if (!stillCurrent || !this.collaboration.canHumanMutateBoard()) return; strokes.forEach((stroke) => { const current = this.store.document.elements.find((element) => element.id === stroke.id); if (current?.type === "stroke") current.recognitionText = text; }); this.store.changed();
   }
 
+  /**
+   * A plain text box, the way a slide or a document does it: click, type, click away. No property
+   * bar and no backdrop over the drawing — only a thin editing outline while it has focus.
+   */
   private beginText(point: InkPoint, existing?: Extract<PageElement, { type: "text" }>, initialStyle: Extract<PageElement, { type: "text" }>["blockStyle"] = "body", sticky = false): void {
     if (!this.collaboration.canHumanMutateBoard()) { this.setStatus(this.collaboration.mutationLockMessage(), 1800); return; }
-    const shell = document.createElement("div"); shell.className = "text-editor-shell"; const controls = document.createElement("div"); controls.className = "text-controls";
-    const select = (label: string, values: Array<[string, string]>, current: string): HTMLSelectElement => { const element = document.createElement("select"); element.setAttribute("aria-label", label); for (const [value, text] of values) { const option = document.createElement("option"); option.value = value; option.textContent = text; element.appendChild(option); } element.value = current; return element; };
-    const style = select("Text style", [["body", "Text"], ["heading-1", "Title"], ["heading-2", "Heading"], ["heading-3", "Subheading"], ["bullet", "Bullets"], ["numbered", "Numbered"], ["check", "Checklist"], ["quote", "Quote"], ["code", "Code"], ["math", "Math"]], existing?.blockStyle ?? initialStyle ?? "body");
-    const family = select("Font", [["sans", "Sans"], ["serif", "Serif"], ["mono", "Mono"], ["handwriting", "Handwriting"]], existing?.fontFamily ?? "sans");
-    const size = document.createElement("input"); size.type = "number"; size.min = "10"; size.max = "180"; size.step = "1"; size.value = String(Math.round(existing?.fontSize ?? (initialStyle === "heading-1" ? 48 : initialStyle === "heading-2" ? 38 : 20))); size.setAttribute("aria-label", "Font size");
-    const formatButton = (label: string, text: string, pressed: boolean): HTMLButtonElement => { const button = document.createElement("button"); button.type = "button"; button.setAttribute("aria-label", label); button.setAttribute("aria-pressed", String(pressed)); button.textContent = text; return button; };
-    const bold = formatButton("Bold", "B", (existing?.fontWeight ?? 400) >= 600); const italic = formatButton("Italic", "I", existing?.fontStyle === "italic"); const underline = formatButton("Underline", "U", existing?.textDecoration === "underline"); underline.classList.add("is-underline");
-    const alignLeft = formatButton("Align left", "≡", (existing?.textAlign ?? "left") === "left"); const alignCenter = formatButton("Align center", "≡", existing?.textAlign === "center"); const alignRight = formatButton("Align right", "≡", existing?.textAlign === "right"); alignLeft.classList.add("align-left"); alignCenter.classList.add("align-center"); alignRight.classList.add("align-right");
-    const color = document.createElement("input"); color.type = "color"; color.value = existing?.color ?? this.penColor; color.setAttribute("aria-label", "Textfarbe");
-    const done = document.createElement("button"); done.type = "button"; done.className = "text-done"; done.textContent = "Done";
-    const input = document.createElement("textarea"); input.setAttribute("aria-label", "Text on whiteboard"); input.rows = 3; input.spellcheck = true;
-    const group = (...children: HTMLElement[]): HTMLSpanElement => { const element = document.createElement("span"); element.className = "text-control-group"; element.append(...children); return element; };
-    controls.append(group(style, family, size), group(bold, italic, underline), group(alignLeft, alignCenter, alignRight), group(color), done); shell.append(controls, input);
-    let alignment: "left" | "center" | "right" = existing?.textAlign ?? "left";
-    const toggle = (button: HTMLButtonElement): void => button.setAttribute("aria-pressed", String(button.getAttribute("aria-pressed") !== "true"));
-    const updatePreview = (): void => { const families = { sans: "Inter, system-ui, sans-serif", serif: "Georgia, serif", mono: "Consolas, monospace", handwriting: "'Segoe Print', cursive" }; input.style.fontFamily = families[family.value as keyof typeof families]; input.style.fontSize = `${Math.max(10, Math.min(180, Number(size.value) || 30)) * this.renderer.camera.zoom}px`; input.style.lineHeight = "1.22"; input.style.fontWeight = bold.getAttribute("aria-pressed") === "true" ? "700" : "400"; input.style.fontStyle = italic.getAttribute("aria-pressed") === "true" ? "italic" : "normal"; input.style.textDecoration = underline.getAttribute("aria-pressed") === "true" ? "underline" : "none"; input.style.textAlign = alignment; input.style.color = color.value; };
-    for (const button of [bold, italic, underline]) button.addEventListener("click", () => { toggle(button); updatePreview(); input.focus(); });
-    for (const [button, value] of [[alignLeft, "left"], [alignCenter, "center"], [alignRight, "right"]] as const) button.addEventListener("click", () => { alignment = value; for (const candidate of [alignLeft, alignCenter, alignRight]) candidate.setAttribute("aria-pressed", String(candidate === button)); updatePreview(); input.focus(); });
-    for (const control of [family, size, color]) control.addEventListener("input", updatePreview); style.addEventListener("change", () => { if (!existing) { if (style.value === "heading-1") size.value = "48"; else if (style.value === "heading-2") size.value = "38"; else if (style.value === "heading-3") size.value = "32"; } updatePreview(); });
+    const blockStyle = existing?.blockStyle ?? initialStyle;
+    const fontSize = existing?.fontSize ?? (blockStyle === "heading-1" ? 48 : blockStyle === "heading-2" ? 38 : blockStyle === "heading-3" ? 32 : sticky ? 24 : 20);
+    const fontFamily = existing?.fontFamily ?? "sans";
+    const fontWeight = existing?.fontWeight ?? (blockStyle?.startsWith("heading") ? 700 as const : 400 as const);
+    const fontStyle = existing?.fontStyle ?? "normal";
+    const textDecoration = existing?.textDecoration ?? "none";
+    const textAlign = existing?.textAlign ?? "left";
+    const color = existing?.color ?? this.penColor;
+    const zoom = this.renderer.camera.zoom;
+
+    const shell = document.createElement("div"); shell.className = "text-editor-shell";
+    const input = document.createElement("textarea"); input.setAttribute("aria-label", "Text on whiteboard"); input.spellcheck = true; input.value = existing?.text ?? "";
+    input.style.fontFamily = { sans: '"Inter", system-ui, sans-serif', serif: "Georgia, serif", mono: "Consolas, monospace", handwriting: '"Caveat", "Segoe Print", cursive' }[fontFamily];
+    input.style.fontSize = `${fontSize * zoom}px`; input.style.lineHeight = "1.22"; input.style.fontWeight = String(fontWeight);
+    input.style.fontStyle = fontStyle; input.style.textDecoration = textDecoration; input.style.textAlign = textAlign; input.style.color = color;
+    shell.append(input); document.body.appendChild(shell);
+
     const anchor = existing ? { x: existing.x, y: existing.baseline - existing.fontSize } : point;
-    const screen = this.renderer.screen(anchor); const rect = this.canvas.getBoundingClientRect(); input.value = existing?.text ?? ""; document.body.appendChild(shell);
-    const editorWidth = Math.min(window.innerWidth - 20, Math.max(160, (existing?.width ?? (sticky ? 320 : 260)) * this.renderer.camera.zoom + 30)); const editorHeight = Math.min(window.innerHeight - 20, Math.max(sticky ? 190 : 120, (existing?.height ?? (sticky ? 160 : 72)) * this.renderer.camera.zoom + 96));
-    shell.style.width = `${editorWidth}px`; shell.style.height = `${editorHeight}px`; updatePreview();
-    // Line the typed text up with where it will actually land, instead of the editor's outer corner.
+    const screen = this.renderer.screen(anchor); const rect = this.canvas.getBoundingClientRect();
+    const editorWidth = Math.min(window.innerWidth - 20, Math.max(120, (existing?.width ?? (sticky ? 320 : 260)) * zoom + 30));
+    const editorHeight = Math.min(window.innerHeight - 20, Math.max(fontSize * zoom * 1.6 + 24, (existing?.height ?? (sticky ? 160 : fontSize * 1.4)) * zoom + 24));
+    shell.style.width = `${editorWidth}px`; shell.style.height = `${editorHeight}px`;
+    // The caret has to sit exactly where the finished text will sit.
     const padding = window.getComputedStyle(input);
     const inset = { x: input.offsetLeft + Number.parseFloat(padding.paddingLeft || "0"), y: input.offsetTop + Number.parseFloat(padding.paddingTop || "0") };
     shell.style.left = `${Math.max(10, Math.min(window.innerWidth - editorWidth - 10, rect.left + screen.x - inset.x))}px`;
     shell.style.top = `${Math.max(10, Math.min(window.innerHeight - editorHeight - 10, rect.top + screen.y - inset.y))}px`;
     this.textEditorOpen = true; input.focus(); input.select();
-    let committed = false; const commit = (): void => { if (committed || !shell.isConnected) return; committed = true; this.textEditorOpen = false; const text = input.value.trim(); const editorRect = shell.getBoundingClientRect(); const contentHeight = Math.max(40, (editorRect.height - controls.getBoundingClientRect().height) / this.renderer.camera.zoom);
-      // Measure the text area while it is still in the document; removing the shell zeroes it.
+
+    let committed = false;
+    const commit = (): void => {
+      if (committed || !shell.isConnected) return; committed = true; this.textEditorOpen = false;
+      const text = input.value.trim();
+      const editorRect = shell.getBoundingClientRect();
       const contentWidth = input.clientWidth - Number.parseFloat(padding.paddingLeft || "0") - Number.parseFloat(padding.paddingRight || "0");
-      shell.remove(); if (!text || !this.guardHumanMutation()) return; this.store.checkpoint();
-      const width = Math.max(160, contentWidth / this.renderer.camera.zoom); const fontSize = Math.max(10, Math.min(180, Number(size.value) || 20)); const fontWeight = bold.getAttribute("aria-pressed") === "true" ? 700 as const : 400 as const; const fontStyle = italic.getAttribute("aria-pressed") === "true" ? "italic" as const : "normal" as const; const textDecoration = underline.getAttribute("aria-pressed") === "true" ? "underline" as const : "none" as const;
-      if (existing) { const current = this.store.document.elements.find((element) => element.id === existing.id); if (current?.type === "text") { current.text = text; current.width = width; current.blockStyle = style.value as typeof current.blockStyle; current.fontSize = fontSize; current.fontFamily = family.value as typeof current.fontFamily; current.fontWeight = fontWeight; current.fontStyle = fontStyle; current.textDecoration = textDecoration; current.textAlign = alignment; current.color = color.value; current.height = Math.max(contentHeight, estimateTextHeight(text, width, fontSize, current)); } }
-      else if (sticky) { const ids = this.store.applyOperation({ type: "create_note", x: point.x, y: point.y, width, height: Math.max(100, contentHeight), text, color: color.value, blockStyle: style.value as Extract<PageElement, { type: "text" }>["blockStyle"] }, "human"); const parentId = this.parentArtboardAt(point)?.id; ids.forEach((id) => { const element = this.store.document.elements.find((candidate) => candidate.id === id); if (element) element.parentId = parentId; }); }
-      else { const element: Extract<PageElement, { type: "text" }> = { type: "text", id: uuid("text"), x: point.x, baseline: point.y + fontSize, width, height: Math.max(contentHeight, estimateTextHeight(text, width, fontSize, { fontFamily: family.value as Extract<PageElement, { type: "text" }>["fontFamily"], fontWeight, fontStyle, blockStyle: style.value as Extract<PageElement, { type: "text" }>["blockStyle"] })), fontSize, color: color.value, text, fontFamily: family.value as Extract<PageElement, { type: "text" }>["fontFamily"], fontWeight, fontStyle, textDecoration, textAlign: alignment, blockStyle: style.value as Extract<PageElement, { type: "text" }>["blockStyle"], semanticRole: "text-field", parentId: this.parentArtboardAt(point)?.id }; this.store.document.elements.push(element); }
-      this.store.changed(); };
+      const contentHeight = Math.max(40, (editorRect.height - 24) / zoom);
+      shell.remove();
+      if (!text || !this.guardHumanMutation()) return;
+      this.store.checkpoint();
+      const width = Math.max(120, contentWidth / zoom);
+      const style = { fontFamily, fontWeight, fontStyle, textDecoration, blockStyle } as const;
+      if (existing) {
+        const current = this.store.document.elements.find((element) => element.id === existing.id);
+        if (current?.type === "text") { current.text = text; current.width = width; current.height = Math.max(contentHeight, estimateTextHeight(text, width, fontSize, style)); }
+      } else if (sticky) {
+        const ids = this.store.applyOperation({ type: "create_note", x: point.x, y: point.y, width, height: Math.max(100, contentHeight), text, color, blockStyle }, "human");
+        const parentId = this.parentArtboardAt(point)?.id;
+        ids.forEach((id) => { const element = this.store.document.elements.find((candidate) => candidate.id === id); if (element) element.parentId = parentId; });
+      } else {
+        const element: Extract<PageElement, { type: "text" }> = { type: "text", id: uuid("text"), x: point.x, baseline: point.y + fontSize, width, height: Math.max(contentHeight, estimateTextHeight(text, width, fontSize, style)), fontSize, color, text, fontFamily, fontWeight, fontStyle, textDecoration, textAlign, blockStyle, semanticRole: "text-field", parentId: this.parentArtboardAt(point)?.id };
+        this.store.document.elements.push(element);
+      }
+      this.store.changed();
+    };
     const cancel = (): void => { if (committed) return; committed = true; this.textEditorOpen = false; shell.remove(); };
-    done.addEventListener("click", commit); shell.addEventListener("focusout", () => window.setTimeout(() => { if (shell.isConnected && !shell.contains(document.activeElement)) commit(); }, 0)); input.addEventListener("keydown", (event) => { if (event.key === "Escape") { event.preventDefault(); cancel(); } if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); event.stopPropagation(); commit(); this.submitHumanTurn(); } });
+    shell.addEventListener("focusout", () => window.setTimeout(() => { if (shell.isConnected && !shell.contains(document.activeElement)) commit(); }, 0));
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") { event.preventDefault(); cancel(); }
+      if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); event.stopPropagation(); commit(); this.submitHumanTurn(); }
+    });
   }
 
   private bindKeyboard(): void {
