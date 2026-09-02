@@ -2,10 +2,15 @@ import { PageElement, elementBounds } from "../src/document";
 import { beautifyStroke } from "../src/strokes";
 import { measureTextBlock } from "./measure";
 import { fitSubpaths, parseSvgPath } from "./path";
+import { BoundsIndex } from "./occupancy";
 import { AgentStyle } from "./compositions";
-import { Bounds, CanvasOperation, ConnectorLanes, ConnectorRoute, WhiteboardDocument, CONNECTOR_LABEL_PADDING, annotationGeometry, boardBounds, boundsOverlapArea, cloneBoard, connectionRoute, elementSignature, emptyBoard, estimateTextHeight, iconSegments, migrateBoard, operationElement, polygonShapePoints, scaleElement, translateElement } from "./model";
+import { Bounds, CanvasOperation, ConnectorLanes, ConnectorRoute, WhiteboardDocument, CONNECTOR_LABEL_PADDING, annotationGeometry, boardBounds, boundsIntersect, boundsOverlapArea, cloneBoard, connectionRoute, elementSignature, emptyBoard, estimateTextHeight, iconSegments, migrateBoard, operationElement, polygonShapePoints, scaleElement, translateElement } from "./model";
 
 const STORAGE_KEY = "smooth-whiteboard-v3";
+/** How much undo history is worth carrying; images make a single step expensive. */
+const MAX_HISTORY_BYTES = 24_000_000;
+/** How far around a connector something still counts as being in its way. */
+const CONNECTOR_MARGIN = 320;
 const LEGACY_STORAGE_KEY = "smooth-whiteboard-v1";
 const PRE_AGENT_STORAGE_KEY = "smooth-whiteboard-pre-agent-v1";
 
@@ -26,6 +31,9 @@ export class BoardStore extends EventTarget {
   private redoStack: WhiteboardDocument[] = [];
   private agentBefore: WhiteboardDocument | null = null;
   private mutationBaseline = new Map<string, { signature: string; bounds: Bounds }>();
+  private channel: BroadcastChannel | null = null;
+  /** Told the shell when another tab edited this board while a turn was open here. */
+  onRemoteBlocked?: () => void;
 
   constructor() {
     super();
@@ -35,17 +43,58 @@ export class BoardStore extends EventTarget {
     try { const snapshot = migrateBoard(JSON.parse(localStorage.getItem(PRE_AGENT_STORAGE_KEY) ?? "null") as unknown); if (snapshot && this.document.turn && ["working", "review"].includes(this.document.turn.status)) this.agentBefore = snapshot; }
     catch { this.agentBefore = null; }
     this.refreshConnections(); this.cleanGroups(); this.resetMutationBaseline();
+    // Two tabs on one board used to overwrite each other in silence, and whoever saved last won.
+    if (typeof BroadcastChannel !== "undefined") {
+      this.channel = new BroadcastChannel(STORAGE_KEY);
+      this.channel.onmessage = (event) => this.receiveRemote(event.data as { revision?: number; document?: unknown } | null);
+      // Outside a browser an open channel keeps the process alive; the test run must still end.
+      (this.channel as unknown as { unref?: () => void }).unref?.();
+    }
+  }
+
+  /**
+   * Content from another tab is adopted when it is newer — but never while a turn is open here.
+   * A proposal in flight belongs to this tab's session and must not be pulled out from under it.
+   */
+  private receiveRemote(message: { revision?: number; document?: unknown } | null): void {
+    if (!message || typeof message.revision !== "number" || message.revision <= this.document.revision) return;
+    const incoming = migrateBoard(message.document); if (!incoming) return;
+    const turn = this.document.turn;
+    if (turn && ["queued", "claimed", "planning", "working", "review"].includes(turn.status)) { this.onRemoteBlocked?.(); return; }
+    this.document = cloneBoard(incoming);
+    this.document.turn = turn ?? null;
+    // History from a tab that is not this one is not ours to step back through.
+    this.undoStack = []; this.redoStack = [];
+    this.refreshConnections(); this.cleanGroups(); this.resetMutationBaseline();
+    this.dispatchEvent(new Event("change"));
   }
 
   canUndo(): boolean { return this.undoStack.length > 0; }
   canRedo(): boolean { return this.redoStack.length > 0; }
 
-  checkpoint(): void { this.undoStack.push(cloneBoard(this.document)); if (this.undoStack.length > 100) this.undoStack.shift(); this.redoStack = []; }
+  /**
+   * How heavy a snapshot is, cheaply. Images live in the document as data URLs, so a photo makes
+   * every step of the history cost megabytes; the stack is capped by weight as well as by count.
+   */
+  private weight(snapshot: WhiteboardDocument): number {
+    let bytes = snapshot.elements.length * 200;
+    for (const element of snapshot.elements) if (element.type === "image") bytes += element.dataUrl.length;
+    return bytes;
+  }
+
+  checkpoint(): void {
+    this.undoStack.push(cloneBoard(this.document));
+    while (this.undoStack.length > 100) this.undoStack.shift();
+    let carried = this.undoStack.reduce((total, snapshot) => total + this.weight(snapshot), 0);
+    while (this.undoStack.length > 1 && carried > MAX_HISTORY_BYTES) carried -= this.weight(this.undoStack.shift()!);
+    this.redoStack = [];
+  }
 
   changed(kind: ChangeKind = "content", source: ChangeSource = "human"): void {
     this.refreshConnections(); this.cleanGroups();
     if (kind === "content") { this.document.revision += 1; this.trackMutation(source); }
     this.persist(STORAGE_KEY, this.document);
+    this.channel?.postMessage({ revision: this.document.revision, document: this.document });
     this.dispatchEvent(new Event("change"));
   }
 
@@ -534,21 +583,33 @@ export class BoardStore extends EventTarget {
     const connections = this.document.connections ??= {};
     const lanes = this.connectorLanes(connections);
     const placedLabels: Bounds[] = [];
+    // Built once for the whole pass: looking an element up, its box, and what sits near a box.
+    // Doing any of these per connector is what made a large board take seconds per stroke.
+    const byId = new Map(this.document.elements.map((element) => [element.id, element]));
+    const boxOfElement = new Map(this.document.elements.map((element) => [element.id, elementBounds(element)]));
+    const index = new BoundsIndex(this.document.elements
+      .filter((element) => element.type !== "text" && !(element.type === "shape" && (element.kind === "arrow" || element.kind === "line")) && !element.artboard)
+      .map((element) => ({ id: element.id, bounds: boxOfElement.get(element.id)! })));
     for (const [arrowId, connection] of Object.entries(connections)) {
-      const from = this.document.elements.find((element) => element.id === connection.fromId);
-      const to = this.document.elements.find((element) => element.id === connection.toId);
-      const arrow = this.document.elements.find((element) => element.id === arrowId);
+      const from = byId.get(connection.fromId);
+      const to = byId.get(connection.toId);
+      const arrow = byId.get(arrowId);
       if (!from || !to || arrow?.type !== "shape" || arrow.kind !== "arrow") {
         const removeIds = new Set([arrowId, connection.labelId].filter((id): id is string => Boolean(id)));
         this.document.elements = this.document.elements.filter((element) => !removeIds.has(element.id));
         this.document.agentElementIds = this.document.agentElementIds.filter((id) => !removeIds.has(id));
         delete connections[arrowId]; continue;
       }
-      const blockers = this.document.elements.filter((element) => element.id !== arrowId && element.id !== from.id && element.id !== to.id && element.id !== connection.labelId && element.type !== "text" && !(element.type === "shape" && (element.kind === "arrow" || element.kind === "line")) && !element.artboard).map((element) => elementBounds(element));
+      const fromBox = boxOfElement.get(from.id)!; const toBox = boxOfElement.get(to.id)!;
+      // Only what lies around this connector can get in its way, so only that is looked at.
+      const span = { minX: Math.min(fromBox.minX, toBox.minX) - CONNECTOR_MARGIN, minY: Math.min(fromBox.minY, toBox.minY) - CONNECTOR_MARGIN, maxX: Math.max(fromBox.maxX, toBox.maxX) + CONNECTOR_MARGIN, maxY: Math.max(fromBox.maxY, toBox.maxY) + CONNECTOR_MARGIN };
+      const blockers = index.near(span)
+        .filter((entry) => entry.id !== arrowId && entry.id !== from.id && entry.id !== to.id && entry.id !== connection.labelId)
+        .map((entry) => entry.bounds);
       const route = connectionRoute(from, to, connection.route ?? "straight", blockers, lanes.get(arrowId) ?? 0); arrow.points = route;
       // Labels placed earlier in this pass are obstacles too, so two of them never stack up.
       if (connection.labelId) {
-        const label = this.document.elements.find((element) => element.id === connection.labelId);
+        const label = byId.get(connection.labelId);
         if (label?.type === "text") {
           // A two-letter label should claim two letters of space: a fixed block makes it collide
           // with everything and puts the visible word off the line it belongs to.
@@ -559,7 +620,7 @@ export class BoardStore extends EventTarget {
 
           // The boxes this arrow connects are obstacles for the label even though the route has to
           // touch them: a word sitting on a card is the thing that makes a diagram unreadable.
-          const obstacles = [...blockers, ...placedLabels, elementBounds(from), elementBounds(to)];
+          const obstacles = [...blockers, ...placedLabels.filter((placed) => boundsIntersect(placed, span)), fromBox, toBox];
           // The box to keep clear is the chip the renderer draws, not just the letters in it.
           const boxOf = (candidate: { x: number; baseline: number }): Bounds => ({ minX: candidate.x - CONNECTOR_LABEL_PADDING.x, minY: candidate.baseline - label.fontSize - CONNECTOR_LABEL_PADDING.y, maxX: candidate.x + label.width + CONNECTOR_LABEL_PADDING.x, maxY: candidate.baseline - label.fontSize + height + CONNECTOR_LABEL_PADDING.y });
           const hits = (box: Bounds): boolean => obstacles.some((other) => box.minX < other.maxX && box.maxX > other.minX && box.minY < other.maxY && box.maxY > other.minY);

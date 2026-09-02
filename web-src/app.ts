@@ -27,6 +27,26 @@ function icon(name: string): string { return `<svg viewBox="0 0 24 24" width="20
 function uuid(prefix: string): string { return `${prefix}-${crypto.randomUUID()}`; }
 function byId<T extends HTMLElement>(id: string): T { const element = document.getElementById(id); if (!element) throw new Error(`Missing ${id}`); return element as T; }
 
+/** Longest edge an imported photo is kept at. It lives in the document, and the document is cloned
+ *  into every undo step, so a full-size camera picture costs far more than it is worth on a board. */
+const MAX_IMAGE_EDGE = 1600;
+
+/** Shrinks an imported picture before it becomes part of the document. */
+function downscaleImage(image: HTMLImageElement, original: string, mimeType: "image/png" | "image/jpeg"): { dataUrl: string; mimeType: "image/png" | "image/jpeg" } {
+  const longest = Math.max(image.naturalWidth, image.naturalHeight);
+  if (longest <= MAX_IMAGE_EDGE && original.length < 600_000) return { dataUrl: original, mimeType };
+  const factor = Math.min(1, MAX_IMAGE_EDGE / longest);
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(image.naturalWidth * factor));
+  canvas.height = Math.max(1, Math.round(image.naturalHeight * factor));
+  const context = canvas.getContext("2d");
+  if (!context) return { dataUrl: original, mimeType };
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  // A photo re-encodes far smaller as JPEG; a PNG is kept as PNG so transparency survives.
+  const encoded = mimeType === "image/png" ? canvas.toDataURL("image/png") : canvas.toDataURL("image/jpeg", .82);
+  return encoded.length < original.length ? { dataUrl: encoded, mimeType } : { dataUrl: original, mimeType };
+}
+
 /** Every settings checkbox and the document field behind it, shared by binding and re-syncing. */
 const SETTING_BOXES = [["setting-smoothing", "inputSmoothing"], ["setting-pressure", "pressure"], ["setting-auto-shape", "autoShape"], ["setting-smart-highlight", "smartHighlight"], ["setting-english-assist", "englishHandwritingAssist"], ["setting-auto-accept", "autoAcceptAgent"], ["setting-clean-style", "cleanStyle"]] as const;
 
@@ -82,6 +102,10 @@ export class WhiteboardApp {
     this.renderer.agentMarkers = structuredClone(this.store.document.turn?.agentMarkers ?? []); this.renderer.activeAgentIds = new Set(this.store.document.turn?.pendingChangeIds ?? []); this.promptInput.value = this.store.document.turn?.promptText ?? "";
     this.bindToolbar(); this.bindSelectionTools(); this.bindCanvas(); this.bindKeyboard(); this.bindCollaboration(); this.bindSettings(); this.bindFiles(); this.bindExplanationControls(); this.bindResponsiveLayout();
     this.store.addEventListener("change", () => { this.renderer.request(); this.updateUi(); });
+    // Anything that still escapes says so once, instead of only reaching the console.
+    window.addEventListener("error", () => this.setStatus("Something went wrong — the board is still here, export it if in doubt", 4000));
+    window.addEventListener("unhandledrejection", () => this.setStatus("Something went wrong — the board is still here, export it if in doubt", 4000));
+    this.store.onRemoteBlocked = () => this.setStatus("This board is open in another tab and was changed there — finish this turn, then reload", 5000);
     this.store.onStorageChange = (working) => this.setStatus(working ? "Saving works again" : "Out of browser storage — this board is no longer being saved. Export it to keep it.", working ? 2600 : 0);
     this.renderer.request(); this.updateUi();
     void registerWhiteboardTools({
@@ -155,11 +179,29 @@ export class WhiteboardApp {
     byId<HTMLButtonElement>("delete-selection").addEventListener("click", () => this.deleteSelection());
   }
 
+  /**
+   * A throw inside a pointer handler used to leave the interaction wedged: the pointer stays
+   * captured, the tool stops responding, and only a reload helps. Everything the canvas does runs
+   * through here, so one bad frame costs a message instead of the session.
+   */
+  private guarded(handler: (event: PointerEvent) => void): (event: PointerEvent) => void {
+    return (event) => {
+      try { handler.call(this, event); }
+      catch (error) {
+        console.error(error);
+        this.interaction = null;
+        try { this.release(event); } catch { /* the capture may already be gone */ }
+        this.setStatus("Something went wrong — the tool was reset", 3200);
+        this.renderer.request(); this.updateUi();
+      }
+    };
+  }
+
   private bindCanvas(): void {
-    this.canvas.addEventListener("pointerdown", (event) => this.pointerDown(event));
-    this.canvas.addEventListener("pointermove", (event) => this.pointerMove(event));
-    this.canvas.addEventListener("pointerup", (event) => this.pointerUp(event));
-    this.canvas.addEventListener("pointercancel", (event) => this.pointerUp(event));
+    this.canvas.addEventListener("pointerdown", this.guarded((event) => this.pointerDown(event)));
+    this.canvas.addEventListener("pointermove", this.guarded((event) => this.pointerMove(event)));
+    this.canvas.addEventListener("pointerup", this.guarded((event) => this.pointerUp(event)));
+    this.canvas.addEventListener("pointercancel", this.guarded((event) => this.pointerUp(event)));
     this.canvas.addEventListener("pointerleave", () => { this.agentMarkerTip.hidden = true; });
     this.canvas.addEventListener("wheel", (event) => { event.preventDefault(); const delta = event.deltaY * (event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16 : 1); this.zoomAt(event.clientX, event.clientY, Math.exp(-delta * 0.0012)); }, { passive: false });
     this.canvas.addEventListener("dblclick", (event) => {
@@ -480,7 +522,8 @@ export class WhiteboardApp {
   private bindFiles(): void {
     this.imageInput.addEventListener("change", () => { const file = this.imageInput.files?.[0]; this.imageInput.value = ""; if (!file) return; if (!this.guardHumanMutation()) return;
       const reader = new FileReader(); reader.onload = () => { const dataUrl = String(reader.result); const image = new Image(); image.onload = () => { const centre = this.renderer.world(this.canvas.clientWidth / 2, this.canvas.clientHeight / 2); const scale = Math.min(1, 560 / image.naturalWidth);
-        const element: ImageElement = { type: "image", id: uuid("image"), x: centre.x - image.naturalWidth * scale / 2, y: centre.y - image.naturalHeight * scale / 2, width: image.naturalWidth * scale, height: image.naturalHeight * scale, dataUrl, mimeType: file.type === "image/png" ? "image/png" : "image/jpeg", sourceName: file.name, parentId: this.parentArtboardAt(centre)?.id };
+        const stored = downscaleImage(image, dataUrl, file.type === "image/png" ? "image/png" : "image/jpeg");
+        const element: ImageElement = { type: "image", id: uuid("image"), x: centre.x - image.naturalWidth * scale / 2, y: centre.y - image.naturalHeight * scale / 2, width: image.naturalWidth * scale, height: image.naturalHeight * scale, dataUrl: stored.dataUrl, mimeType: stored.mimeType, sourceName: file.name, parentId: this.parentArtboardAt(centre)?.id };
         this.store.checkpoint(); this.store.document.elements.push(element); this.store.changed(); }; image.src = dataUrl; }; reader.readAsDataURL(file);
     });
     document.querySelectorAll<HTMLButtonElement>("[data-export]").forEach((button) => button.addEventListener("click", () => { const format = button.dataset.export as "png" | "svg" | "pdf" | "json"; void downloadExport(format, this.store.document, [...this.renderer.selectionIds]).then(() => { this.togglePopover("export-popover"); this.setStatus(`${format.toUpperCase()} exported`, 1800); }).catch(() => this.setStatus("Export failed", 2200)); }));

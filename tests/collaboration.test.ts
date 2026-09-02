@@ -935,6 +935,81 @@ async function main(): Promise<void> {
     assert.equal(reported, true, "when saving works again, that is said too");
   }
 
+  /* TEST 43 - a tool that breaks answers with a refusal instead of rejecting the call. */
+  {
+    const registered: Record<string, (input: Record<string, unknown>) => Promise<{ content: Array<{ type: string; text?: string }> }>> = {};
+    Object.defineProperty(globalThis, "document", { configurable: true, value: { modelContext: { registerTool: (tool: { name: string; execute: (input: Record<string, unknown>) => Promise<{ content: Array<{ type: string; text?: string }> }> }) => { registered[tool.name] = tool.execute; } } } });
+    await registerWhiteboardTools({
+      session: () => ({}), waitForTurn: async () => ({}),
+      inspect: () => { throw new Error("the page fell over"); },
+      focus: () => ({}), publishPlan: () => ({}), apply: async () => ({}), compose: async () => ({}), complete: () => ({}), snapshot: async () => null
+    }, new AbortController().signal);
+
+    const answer = await registered.inspect_whiteboard({});
+    const payload = JSON.parse(answer.content[0].text ?? "{}");
+    assert.equal(payload.ok, false);
+    assert.equal(payload.error, "tool_failed", "the agent gets a refusal it can read");
+    assert.match(String(payload.message), /fell over/, "including what actually went wrong");
+    assert.match(String(payload.instruction), /Nothing was applied/, "and the assurance that nothing happened");
+  }
+
+  /* TEST 44 - two tabs: content follows, an open turn is never pulled away. */
+  {
+    storage.clear();
+    const first = new BoardStore();
+    const second = new BoardStore();
+    let blocked = 0;
+    second.onRemoteBlocked = () => { blocked += 1; };
+
+    first.applyOperation(box("from-the-other-tab", 0, 0), "human");
+    first.changed();
+    await sleep(60);
+    assert.ok(second.document.elements.some((element) => element.id === "from-the-other-tab"), "the other tab picks the drawing up");
+    assert.equal(blocked, 0);
+
+    // Now the second tab has a turn open: nothing may be adopted underneath it.
+    const session = new CollaborationSession(second);
+    session.submit({ promptText: "Mine", instructionInk: [] });
+    first.applyOperation(box("later", 600, 0), "human");
+    first.changed();
+    await sleep(60);
+    assert.equal(second.document.elements.some((element) => element.id === "later"), false, "an open turn is not overwritten from elsewhere");
+    assert.equal(blocked, 1, "and the human is told once");
+    assert.ok(second.document.turn, "the turn itself survives");
+  }
+
+  /* TEST 45 - a kept contribution is remembered, a rejected one leaves nothing. */
+  {
+    const test = harness();
+    test.session.submit({ promptText: "Draw", instructionInk: [] });
+    const lease = await claim(test);
+    await test.session.apply([{ type: "create_note", id: "kept", x: 0, y: 0, width: 220, text: "Kept" }], undefined, lease.leaseToken);
+    test.session.complete("Drew the first panel", lease.leaseToken);
+    assert.equal(test.session.accept(), true);
+    assert.equal((test.store.document.journal ?? []).length, 1, "an accepted turn is one line of history");
+    assert.equal(test.store.document.journal![0].summary, "Drew the first panel");
+    assert.deepEqual((test.session.inspect("all").history as Array<{ summary: string }>).map((entry) => entry.summary), ["Drew the first panel"], "and the agent can read it back");
+
+    test.session.submit({ promptText: "More", instructionInk: [] });
+    const second = await claim(test);
+    await test.session.apply([{ type: "create_note", id: "dropped", x: 600, y: 0, width: 220, text: "Dropped" }], undefined, second.leaseToken);
+    test.session.complete("Drew a second panel", second.leaseToken);
+    assert.equal(test.session.reject(), true);
+    assert.equal((test.store.document.journal ?? []).length, 1, "a rejected turn is not part of the story");
+  }
+
+  /* TEST 46 - history is capped by weight, so one photo does not fill it. */
+  {
+    storage.clear();
+    const store = new BoardStore();
+    const heavy = "data:image/png;base64," + "A".repeat(3_000_000);
+    store.document.elements.push({ type: "image", id: "photo", x: 0, y: 0, width: 400, height: 300, dataUrl: heavy, mimeType: "image/png" });
+    for (let step = 0; step < 20; step += 1) store.checkpoint();
+    let steps = 0; while (store.canUndo()) { store.undo(); steps += 1; }
+    assert.ok(steps < 20, `a heavy board keeps fewer steps than the count limit, kept ${steps}`);
+    assert.ok(steps >= 1, "but never loses the ability to go back at all");
+  }
+
   console.log("collaboration tests: ok");
 }
 

@@ -165,3 +165,41 @@ export function collisionsWith(box: Bounds, elements: PageElement[], options: { 
   return occupancyMap(elements.filter((element) => !ignore.has(element.id)), options.groupOf, options.transparentIds)
     .filter((unit) => boundsIntersect(unit.bounds, box) && !encloses(unit.bounds, box) && !encloses(box, unit.bounds));
 }
+
+/**
+ * A coarse bucket index over boxes. Refreshing connectors used to test every candidate position
+ * against every element on the board, which is fine at fifty elements and takes twenty seconds at
+ * two thousand. Looking up only what is nearby turns that back into a linear pass.
+ */
+export class BoundsIndex {
+  private readonly cells = new Map<string, Array<{ id: string; bounds: Bounds }>>();
+  /** Boxes so large that bucketing them is pointless; they are always in the answer. */
+  private readonly sprawling: Array<{ id: string; bounds: Bounds }> = [];
+
+  constructor(entries: Array<{ id: string; bounds: Bounds }>, private readonly cell = 400) {
+    for (const entry of entries) {
+      const keys = this.keysFor(entry.bounds);
+      if (keys === null) { this.sprawling.push(entry); continue; }
+      for (const key of keys) { const bucket = this.cells.get(key); if (bucket) bucket.push(entry); else this.cells.set(key, [entry]); }
+    }
+  }
+
+  /** Cell keys a box touches, or null when it covers so many that listing them costs more than it saves. */
+  private keysFor(bounds: Bounds): string[] | null {
+    const minX = Math.floor(bounds.minX / this.cell); const maxX = Math.floor(bounds.maxX / this.cell);
+    const minY = Math.floor(bounds.minY / this.cell); const maxY = Math.floor(bounds.maxY / this.cell);
+    if ((maxX - minX + 1) * (maxY - minY + 1) > 400) return null;
+    const keys: string[] = [];
+    for (let x = minX; x <= maxX; x += 1) for (let y = minY; y <= maxY; y += 1) keys.push(`${x}:${y}`);
+    return keys;
+  }
+
+  near(bounds: Bounds): Array<{ id: string; bounds: Bounds }> {
+    const keys = this.keysFor(bounds);
+    if (keys === null) return [...this.cells.values()].flat().concat(this.sprawling);
+    const seen = new Set<string>(); const found = [...this.sprawling];
+    for (const entry of found) seen.add(entry.id);
+    for (const key of keys) for (const entry of this.cells.get(key) ?? []) if (!seen.has(entry.id)) { seen.add(entry.id); found.push(entry); }
+    return found;
+  }
+}

@@ -83,6 +83,28 @@ Rules the runtime enforces, not just the prose:
 - Accept / Reject only appear in `review`; while the agent writes, human board mutations are locked by one central rule instead of per-handler checks.
 - Session bookkeeping (claim, plan, status, lease) never bumps the canvas revision, so `baseRevision` only becomes stale when the visible board really changed.
 
+## Where WebMCP stands, and what the bridge is
+
+The board registers its tools on `document.modelContext`. That is an early proposal, not something a
+stable browser ships today, so on most machines there is nothing on the other end: the canvas works,
+the send arrow queues a note, and nobody picks it up. The board says so rather than pretending —
+"Sent, but no agent is connected to this tab" — and the note can be taken back with the button beside
+the arrow.
+
+`web/bridge.html` loads the same app with a stand-in host: it provides `document.modelContext`,
+collects what the board registers, and exposes it as `window.whiteboardTools` so the tools can be
+driven from the console or from an automated check. It is a stand-in, not an agent — it decides
+nothing and calls nothing by itself. Open `index.html` to use the board as a person would.
+
+    await window.whiteboardTools.list()
+    await window.whiteboardTools.json("inspect_whiteboard", {})
+
+**A limit worth naming:** whatever calls `registerTool` in the tab may draw. There is no way for a
+page to authenticate an agent, so an extension with script access is an agent as far as this board is
+concerned. What protects the work is the protocol, not the platform: the agent writes only inside a
+turn the human started, everything it draws stays a proposal until it is accepted, and a rejection
+takes back exactly what the agent touched.
+
 ## Run the web app
 
 ```bash

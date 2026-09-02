@@ -6,7 +6,7 @@ import { spacing } from "./theme";
 import {
   Bounds, CanvasOperation, CollaborationTurn, ContextScope, DeletedRegion, PriorityRegion, SessionState, TurnCapabilities,
   boardBounds, boundsForPoints, boundsIntersect, elementSummary, isCanvasOperation, lintBoard, operationTargetIds,
-  iconNames, plannedBounds, plannedElementIds, preflightOperations, resolveGestureElements
+  MAX_JOURNAL_ENTRIES, iconNames, plannedBounds, plannedElementIds, preflightOperations, resolveGestureElements
 } from "./model";
 import { OccupiedUnit, freeRegions, occupancyMap, placeFor } from "./occupancy";
 import { compositionBounds, translateComposition } from "./layout";
@@ -249,8 +249,20 @@ export class CollaborationSession {
   accept(): boolean {
     if (!this.canResolveProposal()) return false;
     this.transaction = null;
+    this.recordInJournal(this.store.document.turn);
     this.store.acceptAgentContribution();
     return true;
+  }
+
+  /**
+   * One line per kept contribution. A rejected proposal leaves nothing behind: the journal is what
+   * the board agreed on, not what was tried.
+   */
+  private recordInJournal(turn: CollaborationTurn | null | undefined): void {
+    const summary = turn?.completionSummary?.trim(); if (!turn || !summary) return;
+    const journal = this.store.document.journal ??= [];
+    journal.push({ at: new Date().toISOString(), summary: summary.slice(0, 240), elementIds: unique(turn.pendingChangeIds).slice(0, 40) });
+    this.store.document.journal = journal.slice(-MAX_JOURNAL_ENTRIES);
   }
 
   reject(): boolean {
@@ -371,6 +383,7 @@ export class CollaborationSession {
       settings: this.store.document.settings,
       artboardIds: this.store.document.artboardIds,
       symbols: Object.keys(this.store.document.symbols ?? {}),
+      history: (this.store.document.journal ?? []).slice(-6).map((entry) => ({ at: entry.at, summary: entry.summary })),
       explanationSequences: this.store.document.explanationSequences,
       lintIssues: lintBoard(this.store.document),
       designSystem,
@@ -588,7 +601,9 @@ export class CollaborationSession {
       this.view.status(summary, 4000); this.view.refresh();
       return this.respond({ ok: true, visualChanges: false, instruction: "No canvas changes were made, so there is nothing to review. Call wait_for_human_turn again." });
     }
+    turn.completionSummary = summary.trim().slice(0, 240);
     if (this.store.document.settings.autoAcceptAgent) {
+      this.recordInJournal(turn);
       // The human asked for changes to be kept without a prompt; one Ctrl+Z still takes the whole
       // proposal back, because a checkpoint was written before the first operation.
       this.store.acceptAgentContribution();

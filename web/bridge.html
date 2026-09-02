@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Whiteboard · WebMCP bridge</title>
+  <meta name="description" content="Loads the whiteboard with a stand-in WebMCP host, so the tools can be driven without a browser agent.">
+</head>
+<body>
+<!--
+  A stand-in WebMCP host.
+
+  The whiteboard registers its tools on document.modelContext. No stable browser ships that today,
+  so this page provides one: it collects what the board registers and exposes it on window, which is
+  how the automated browser checks drive the app and how a demo can run on a machine without an
+  agent. It is a stand-in, not an agent — it decides nothing and calls nothing on its own. Open
+  index.html instead to use the board the way a person would.
+
+    await window.whiteboardTools.list()             -> the registered tool names
+    await window.whiteboardTools.call(name, input)   -> the raw content array
+    await window.whiteboardTools.json(name, input)   -> the first text part, parsed
+-->
+<script>
+  const registered = new Map();
+  document.modelContext = {
+    registerTool(tool) { registered.set(tool.name, tool); }
+  };
+  window.whiteboardTools = {
+    list: () => [...registered.keys()],
+    async call(name, input) {
+      const tool = registered.get(name);
+      if (!tool) throw new Error(`No tool named ${name}. Registered: ${[...registered.keys()].join(", ")}`);
+      const answer = await tool.execute(input ?? {});
+      return answer.content;
+    },
+    async json(name, input) {
+      const content = await this.call(name, input);
+      const text = content.find((part) => part.type === "text");
+      return text ? JSON.parse(text.text) : null;
+    }
+  };
+</script>
+<script>
+  // The real page markup and the real bundle, loaded into this document unchanged.
+  fetch("./index.html").then((response) => response.text()).then((html) => {
+    const parsed = new DOMParser().parseFromString(html, "text/html");
+    document.head.insertAdjacentHTML("beforeend", [...parsed.head.querySelectorAll("link,style")].map((node) => node.outerHTML).join(""));
+    document.body.insertAdjacentHTML("beforeend", parsed.body.innerHTML);
+    const script = document.createElement("script");
+    script.type = "module"; script.src = "./app.js?bridge=1";
+    document.body.appendChild(script);
+  });
+</script>
+</body>
+</html>

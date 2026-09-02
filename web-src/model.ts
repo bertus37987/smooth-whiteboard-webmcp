@@ -89,6 +89,8 @@ export interface CollaborationTurn {
   /** Where the human removed content before submitting; ids no longer resolve, the bounds still do. */
   deletedRegions?: DeletedRegion[];
   planSummary?: string;
+  /** The sentence the agent finished with; written into the journal once the human keeps the work. */
+  completionSummary?: string;
   leaseToken?: string;
 }
 export interface CollaborationRequest {
@@ -100,6 +102,11 @@ export interface CollaborationRequest {
   /** Transient blue AI-pen strokes: visual instruction, never a permanent canvas element. */
   ink?: InkPoint[][];
 }
+/** One accepted contribution, in the words the agent used to finish it. */
+export interface JournalEntry { at: string; summary: string; elementIds: string[] }
+/** How much of the board's story is worth carrying. */
+export const MAX_JOURNAL_ENTRIES = 20;
+
 export interface WhiteboardDocument {
   version: 3;
   revision: number;
@@ -118,6 +125,8 @@ export interface WhiteboardDocument {
   presentation?: { sequenceId: string; index: number } | null;
   /** Symbols the agent drew and named, as SVG path data in a 0..1 box. Reusable like the built-in ones. */
   symbols?: Record<string, string>;
+  /** What was agreed on this board, one line per accepted turn, so a later turn does not start blind. */
+  journal?: JournalEntry[];
 }
 
 export type BoardTool = "select" | "hand" | "pen" | "ai-pen" | "marker" | "rectangle" | "ellipse" | "arrow" | "text" | "sticky" | "image" | "lasso" | "ai-lasso" | "eraser" | "artboard";
@@ -215,7 +224,7 @@ export function isCanvasOperation(value: unknown): value is CanvasOperation {
 }
 
 export const defaultSettings = (): WhiteboardSettings => ({ inputSmoothing: true, pressure: true, autoShape: false, smartHighlight: true, englishHandwritingAssist: true, autoAcceptAgent: false, cleanStyle: false });
-export const emptyBoard = (): WhiteboardDocument => ({ version: 3, revision: 0, elements: [], agentElementIds: [], request: null, turn: null, settings: defaultSettings(), lastAgentRevision: 0, connections: {}, groups: {}, artboardIds: [], explanationSequences: [], sources: [], presentation: null, symbols: {} });
+export const emptyBoard = (): WhiteboardDocument => ({ version: 3, revision: 0, elements: [], agentElementIds: [], request: null, turn: null, settings: defaultSettings(), lastAgentRevision: 0, connections: {}, groups: {}, artboardIds: [], explanationSequences: [], sources: [], presentation: null, symbols: {}, journal: [] });
 
 export function cloneBoard(document: WhiteboardDocument): WhiteboardDocument { return structuredClone(document); }
 
@@ -248,7 +257,7 @@ export function migrateBoard(value: unknown): WhiteboardDocument | null {
   } : request && request.state !== "answered" ? { id: request.id, status: request.state === "working" ? "working" : "queued", submittedRevision: legacy.revision, createdAt: request.createdAt, promptText: request.instruction ?? "", selectionIds: request.selectionIds, instructionInk: request.ink ?? [], agentMarkers: [], priorityRegions: [], changedElementIds: [], pendingChangeIds: [] } : null;
   const elements = structuredClone(legacy.elements);
   const artboardIds = elements.filter((element) => element.artboard || element.semanticRole === "artboard").map((element) => element.id);
-  return { version: 3, revision: legacy.revision, elements, agentElementIds: [...legacy.agentElementIds], request: null, turn, settings: { ...defaultSettings(), ...(legacy as { settings?: Partial<WhiteboardSettings> }).settings }, lastAgentRevision: (legacy as { lastAgentRevision?: number }).lastAgentRevision ?? 0, connections: structuredClone(legacy.connections ?? {}), groups: structuredClone(legacy.groups ?? {}), artboardIds, explanationSequences: [], sources: [], presentation: (legacy as { presentation?: WhiteboardDocument["presentation"] }).presentation ?? null, symbols: { ...(legacy as { symbols?: Record<string, string> }).symbols } };
+  return { version: 3, revision: legacy.revision, elements, agentElementIds: [...legacy.agentElementIds], request: null, turn, settings: { ...defaultSettings(), ...(legacy as { settings?: Partial<WhiteboardSettings> }).settings }, lastAgentRevision: (legacy as { lastAgentRevision?: number }).lastAgentRevision ?? 0, connections: structuredClone(legacy.connections ?? {}), groups: structuredClone(legacy.groups ?? {}), artboardIds, explanationSequences: [], sources: [], presentation: (legacy as { presentation?: WhiteboardDocument["presentation"] }).presentation ?? null, symbols: { ...(legacy as { symbols?: Record<string, string> }).symbols }, journal: [...((legacy as { journal?: JournalEntry[] }).journal ?? [])].slice(-MAX_JOURNAL_ENTRIES) };
 }
 
 export function boardBounds(elements: PageElement[]): { minX: number; minY: number; maxX: number; maxY: number } | null {
