@@ -3,6 +3,11 @@
  * `inspect_whiteboard` returns this as `designSystem`, so a hand-placed rectangle uses the same
  * ink, surface and spacing values as a generated study note.
  */
+/** Distinguishing colours for parallel branches, categories or series. Ink stays the default. */
+export const accents = ["#2457e6", "#16833b", "#c2410c", "#7c3aed", "#0e7490", "#b91c1c"] as const;
+/** The same accents as light fills, for tinted cards and columns. */
+export const accentTints = ["#e8eeff", "#e6f4ea", "#fdeee4", "#f1e9fd", "#e4f4f7", "#fdeaea"] as const;
+
 export const palette = {
   ink: "#080808",
   muted: "#404040",
@@ -15,7 +20,10 @@ export const palette = {
   highlight: "#ffd84d",
   positive: "#16833b",
   warning: "#c2410c",
-  info: "#2457e6"
+  danger: "#b91c1c",
+  info: "#2457e6",
+  accents,
+  accentTints
 } as const;
 
 /** 4pt-based spacing scale; every generated layout uses these gaps and paddings. */
@@ -44,4 +52,10 @@ export const artboardPresets = {
 /** Minimum touch target the linter enforces. */
 export const minimumTouchTarget = 44;
 
-export const designSystem = { palette, spacing, typeScale, radius, strokeWidth, artboardPresets, minimumTouchTarget } as const;
+/** How to use the vocabulary above; returned to the agent with the values themselves. */
+export const designGuidance = {
+  colour: "Ink is the default for text and outlines. Reach for palette.accents when colour carries meaning: parallel branches, categories, series or a status. Use one accent per meaning, tint fills with the matching palette.accentTints, and keep body text in ink so contrast stays readable.",
+  renderStyle: "Content parented to an artboard is drawn cleanly with straight lines and the sans face; content on the open canvas is drawn by hand. Set renderStyle and fontFamily explicitly to override either default."
+} as const;
+
+export const designSystem = { palette, spacing, typeScale, radius, strokeWidth, artboardPresets, minimumTouchTarget, guidance: designGuidance } as const;

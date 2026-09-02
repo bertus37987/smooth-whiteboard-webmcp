@@ -1,7 +1,7 @@
 import { TEXT_LINE_HEIGHT, TextMetricsInput, textFontString, wrapTextLines } from "../src/rendering";
 
 export interface TextBlock extends TextMetricsInput { text: string; width: number }
-export interface TextMeasurement { height: number; lines: string[]; lineCount: number; longestLine: number }
+export interface TextMeasurement { height: number; lines: string[]; lineCount: number; longestLine: number; longestWord: number }
 
 let sharedContext: CanvasRenderingContext2D | null | undefined;
 
@@ -24,7 +24,9 @@ export function measureTextBlock(block: TextBlock): TextMeasurement {
   else measure = (line) => line.length * block.fontSize * 0.56;
   const lines = wrapTextLines(block.text, block.width, block.blockStyle, measure);
   const longestLine = lines.reduce((widest, line) => Math.max(widest, measure(line)), 0);
-  return { height: Math.max(block.fontSize * 1.2, lines.length * block.fontSize * TEXT_LINE_HEIGHT), lines, lineCount: lines.length, longestLine };
+  // A single long word cannot wrap, so a box narrower than this will always spill.
+  const longestWord = block.text.split(/\s+/).filter(Boolean).reduce((widest, word) => Math.max(widest, measure(word)), 0);
+  return { height: Math.max(block.fontSize * 1.2, lines.length * block.fontSize * TEXT_LINE_HEIGHT), lines, lineCount: lines.length, longestLine, longestWord };
 }
 
 export function measuredTextHeight(block: TextBlock): number { return measureTextBlock(block).height; }

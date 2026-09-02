@@ -115,15 +115,15 @@ export type BoardTool = "select" | "hand" | "pen" | "ai-pen" | "marker" | "recta
 
 export type CanvasOperation =
   | { type: "create_text"; id?: string; x: number; y: number; text: string; fontSize?: number; width?: number; color?: string; fontFamily?: "sans" | "serif" | "mono" | "handwriting"; fontWeight?: 400 | 500 | 600 | 700; fontStyle?: "normal" | "italic"; textDecoration?: "none" | "underline" | "line-through"; textAlign?: "left" | "center" | "right"; blockStyle?: TextElement["blockStyle"]; highlightColor?: string; renderStyle?: "clean" | "sketch"; semanticRole?: string; parentId?: string; name?: string; sourceRefs?: string[] }
-  | { type: "create_note"; id?: string; x: number; y: number; width?: number; height?: number; text: string; color?: string; fillColor?: string; blockStyle?: TextElement["blockStyle"]; renderStyle?: "clean" | "sketch" }
+  | { type: "create_note"; id?: string; x: number; y: number; width?: number; height?: number; text: string; color?: string; fillColor?: string; blockStyle?: TextElement["blockStyle"]; renderStyle?: "clean" | "sketch"; parentId?: string }
   | { type: "create_table"; id?: string; x: number; y: number; width: number; height: number; rows: number; columns: number; headers?: string[]; cells?: string[]; color?: string; fillColor?: string; renderStyle?: "clean" | "sketch" }
   | { type: "create_frame"; id?: string; x: number; y: number; width: number; height: number; title?: string; color?: string; backgroundColor?: string; renderStyle?: "clean" | "sketch"; semanticRole?: string; parentId?: string; name?: string; artboardPreset?: "desktop" | "tablet" | "mobile" | "custom"; clipContent?: boolean }
   | { type: "create_highlight"; id?: string; x: number; y: number; width: number; points?: InkPoint[]; size?: number; color?: string; opacity?: number }
   | { type: "highlight_text"; ids: string[]; color?: string; opacity?: number; padding?: number }
-  | { type: "create_shape"; id?: string; kind: "rectangle" | "ellipse" | "diamond" | "triangle"; x: number; y: number; width: number; height: number; filled?: boolean; color?: string; strokeWidth?: number; fillColor?: string; fillOpacity?: number; radius?: number; lineStyle?: "solid" | "dashed" | "dotted"; semanticRole?: string; parentId?: string; name?: string }
-  | { type: "create_arrow"; id?: string; from: { x: number; y: number }; to: { x: number; y: number }; color?: string; strokeWidth?: number; arrowHeads?: "end" | "start" | "both"; lineStyle?: "solid" | "dashed" | "dotted" }
+  | { type: "create_shape"; id?: string; kind: "rectangle" | "ellipse" | "diamond" | "triangle"; x: number; y: number; width: number; height: number; filled?: boolean; color?: string; strokeWidth?: number; fillColor?: string; fillOpacity?: number; radius?: number; lineStyle?: "solid" | "dashed" | "dotted"; renderStyle?: "clean" | "sketch"; semanticRole?: string; parentId?: string; name?: string }
+  | { type: "create_arrow"; id?: string; from: { x: number; y: number }; to: { x: number; y: number }; color?: string; strokeWidth?: number; arrowHeads?: "end" | "start" | "both"; lineStyle?: "solid" | "dashed" | "dotted"; renderStyle?: "clean" | "sketch" }
   | { type: "create_stroke"; id?: string; points: InkPoint[]; size?: number; color?: string }
-  | { type: "create_polygon"; id?: string; points: InkPoint[]; closed?: boolean; color?: string; strokeWidth?: number; fillColor?: string; fillOpacity?: number }
+  | { type: "create_polygon"; id?: string; points: InkPoint[]; closed?: boolean; color?: string; strokeWidth?: number; fillColor?: string; fillOpacity?: number; renderStyle?: "clean" | "sketch" }
   | { type: "create_path"; id?: string; points: Array<{ x: number; y: number }>; smooth?: boolean; closed?: boolean; bow?: number; color?: string; strokeWidth?: number; fillColor?: string; fillOpacity?: number; renderStyle?: "clean" | "sketch" }
   | { type: "create_callout"; id?: string; x: number; y: number; width?: number; text: string; anchorId?: string; color?: string; fillColor?: string; fontSize?: number; renderStyle?: "clean" | "sketch" }
   | { type: "create_icon"; id?: string; name: IconName; x: number; y: number; size?: number; color?: string; parentId?: string }
@@ -165,7 +165,7 @@ export function isCanvasOperation(value: unknown): value is CanvasOperation {
     case "create_frame": return finite(operation.x) && finite(operation.y) && finite(operation.width) && finite(operation.height) && optionalOneOf(operation.renderStyle, ["clean", "sketch"]);
     case "create_highlight": return finite(operation.x) && finite(operation.y) && finite(operation.width) && (operation.points === undefined || (Array.isArray(operation.points) && operation.points.length > 1 && operation.points.every(position))) && optionalFinite(operation.size) && optionalFinite(operation.opacity);
     case "highlight_text": return ids(operation.ids) && optionalFinite(operation.opacity) && optionalFinite(operation.padding);
-    case "create_shape": return ["rectangle", "ellipse", "diamond", "triangle"].includes(String(operation.kind)) && finite(operation.x) && finite(operation.y) && finite(operation.width) && finite(operation.height) && optionalFinite(operation.radius) && optionalFinite(operation.strokeWidth) && optionalFinite(operation.fillOpacity) && optionalOneOf(operation.lineStyle, ["solid", "dashed", "dotted"]);
+    case "create_shape": return ["rectangle", "ellipse", "diamond", "triangle"].includes(String(operation.kind)) && finite(operation.x) && finite(operation.y) && finite(operation.width) && finite(operation.height) && optionalFinite(operation.radius) && optionalFinite(operation.strokeWidth) && optionalFinite(operation.fillOpacity) && optionalOneOf(operation.lineStyle, ["solid", "dashed", "dotted"]) && optionalOneOf(operation.renderStyle, ["clean", "sketch"]);
     case "create_arrow": return position(operation.from) && position(operation.to) && optionalFinite(operation.strokeWidth) && optionalOneOf(operation.arrowHeads, ["end", "start", "both"]) && optionalOneOf(operation.lineStyle, ["solid", "dashed", "dotted"]);
     case "create_stroke": return Array.isArray(operation.points) && operation.points.length > 1 && operation.points.every(position);
     case "create_polygon": return Array.isArray(operation.points) && operation.points.length > 1 && operation.points.every(position);
@@ -415,6 +415,12 @@ export function lintBoard(document: WhiteboardDocument): BoardLintIssue[] {
     if (element.parentId) childTextOf.set(element.parentId, true);
     const group = groupOf.get(element.id); if (group) for (const sibling of document.groups?.[group] ?? []) childTextOf.set(sibling, true);
   }
+  // Smallest filled shape first: a label is judged against the button it sits on, not the page behind it.
+  const filledSurfaces = elements
+    .filter((element): element is Extract<PageElement, { type: "shape" }> => element.type === "shape" && Boolean(element.fillColor) && (element.fillOpacity ?? 0) > .7)
+    .slice(-120)
+    .map((element) => ({ id: element.id, fill: element.fillColor!, bounds: elementBounds(element) }))
+    .sort((left, right) => (left.bounds.maxX - left.bounds.minX) * (left.bounds.maxY - left.bounds.minY) - (right.bounds.maxX - right.bounds.minX) * (right.bounds.maxY - right.bounds.minY));
   for (const element of elements) {
     const bounds = elementBounds(element); const width = bounds.maxX - bounds.minX; const height = bounds.maxY - bounds.minY;
     if (element.type === "text" && element.height !== undefined && estimateTextHeight(element.text, element.width, element.fontSize, element) > element.height + 2) issues.push({ code: "text-overflow", severity: "warning", elementIds: [element.id], message: "Text does not fit its text box.", suggestedFix: "Increase the box height or reduce the font size." });
@@ -423,12 +429,23 @@ export function lintBoard(document: WhiteboardDocument): BoardLintIssue[] {
     if (element.parentId) {
       const parent = byId.get(element.parentId); if (parent) { const frame = elementBounds(parent); if (bounds.minX < frame.minX || bounds.minY < frame.minY || bounds.maxX > frame.maxX || bounds.maxY > frame.maxY) issues.push({ code: "off-artboard", severity: "warning", elementIds: [element.id, parent.id], message: "Element sticks out of its artboard.", suggestedFix: "Move the element inside the artboard or enable clipping on purpose." }); }
     }
-    if (element.type === "text" && element.parentId) {
-      const parent = byId.get(element.parentId); if (parent?.type === "shape" && parent.fillOpacity && parent.fillOpacity > .7 && parent.fillColor) { const foreground = relativeLuminance(element.color); const background = relativeLuminance(parent.fillColor); if (foreground !== null && background !== null) { const ratio = (Math.max(foreground, background) + .05) / (Math.min(foreground, background) + .05); if (ratio < 4.5) issues.push({ code: "low-contrast", severity: "warning", elementIds: [element.id, parent.id], message: `Text contrast is only ${ratio.toFixed(1)}:1.`, suggestedFix: "Pick a text or background colour with more contrast." }); } }
+    if (element.type === "text") {
+      const surface = surfaceUnder(bounds, filledSurfaces);
+      if (surface) {
+        const foreground = relativeLuminance(element.color); const background = relativeLuminance(surface.fill);
+        if (foreground !== null && background !== null) {
+          const ratio = (Math.max(foreground, background) + .05) / (Math.min(foreground, background) + .05);
+          if (ratio < 4.5) issues.push({ code: "low-contrast", severity: "warning", elementIds: [element.id, surface.id], message: `Text contrast is only ${ratio.toFixed(1)}:1.`, suggestedFix: "Pick a text or background colour with more contrast." });
+        }
+      }
     }
   }
   issues.push(...overlapIssues(elements, groupOf));
   return issues.slice(0, 80);
+}
+
+function surfaceUnder(bounds: Bounds, surfaces: Array<{ id: string; fill: string; bounds: Bounds }>): { id: string; fill: string } | null {
+  return surfaces.find((surface) => bounds.minX >= surface.bounds.minX && bounds.maxX <= surface.bounds.maxX && bounds.minY >= surface.bounds.minY && bounds.maxY <= surface.bounds.maxY) ?? null;
 }
 
 /** Unrelated objects that sit on top of each other: the defect fixed layout code cannot see. */

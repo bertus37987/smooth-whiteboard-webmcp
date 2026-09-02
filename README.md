@@ -25,6 +25,8 @@ This project turns the existing Smooth Handwriting vector canvas into a standalo
 - Structured editable visuals: study notes, explainers, timelines, comparisons, hierarchies, UI wireframes, flowcharts, mindmaps, research briefs, calculations and plots
 - Every generated card, note and page is measured against the real font, so agent layouts do not overflow their boxes
 - Hand-drawn sketch rendering with a deterministic wobble, identical on screen and in PNG/SVG/PDF export
+- Style follows the context: what the agent parents to an artboard comes out clean and typeset, what it puts on the open canvas comes out hand-drawn, and either default can be overridden per object
+- Colour where it carries meaning: mindmap branches, decision nodes, timeline markers and comparison columns take accents from one shared set, and the agent is told when to reach for them
 - Routed connectors (straight, orthogonal, curved), flowchart diamonds and triangles, annotation callouts with leader lines, smoothed free-hand paths and fourteen icons
 - Guided explanations show the agent's own step text, remember which step is open across reloads, and can be driven by the agent
 - Optional English handwriting assistance using the browser/OS recognizer. It runs locally after pen-up, never replaces visible ink and can be disabled; unsupported browsers retain only gentle geometric smoothing
@@ -50,7 +52,7 @@ editing (move, resize, rewrite, restyle, lock, reorder, group, re-parent, duplic
 (`align`, `distribute`, `auto_layout`, `fit_to_content`) and teaching (`set_explanation_sequence`,
 `present_step`). Its answer carries `lintIssues` for the elements just touched, so the agent can fix an
 overflow, an overlap, an unlabelled control or a contrast problem inside the same turn.
-`inspect_whiteboard` additionally returns `designSystem` (the shared palette, spacing and type scale) and
+`inspect_whiteboard` additionally returns `designSystem` (the shared palette, accents, spacing and type scale, plus guidance on when to use colour and when drawing comes out clean) and
 `activePresentation` (the guided-explanation step the human is looking at).
 
 The board state—not an agent's previous output—is always the source of truth. Agent-created items are normal canvas items, so the human can move, resize, rewrite or remove them before the next inspection.

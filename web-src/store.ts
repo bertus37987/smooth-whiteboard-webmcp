@@ -128,6 +128,25 @@ export class BoardStore extends EventTarget {
 
   private elementsFor(ids: string[]) { const wanted = new Set(ids); return this.document.elements.filter((element) => wanted.has(element.id)); }
 
+  /** True when the element hangs under an artboard: designed UI, not a hand-drawn explanation. */
+  onArtboard(parentId?: string): boolean {
+    let current = parentId ? this.document.elements.find((element) => element.id === parentId) : undefined;
+    for (let depth = 0; current && depth < 6; depth += 1) {
+      if (current.artboard || current.semanticRole === "artboard") return true;
+      current = current.parentId ? this.document.elements.find((element) => element.id === current!.parentId) : undefined;
+    }
+    return false;
+  }
+
+  /**
+   * Agent text defaults to the hand-drawn look on the open canvas and to a clean sans face on an
+   * artboard, so a UI mockup does not come out in marker pen. An explicit value always wins.
+   */
+  private agentTextStyle(parentId: string | undefined, fontFamily: "sans" | "serif" | "mono" | "handwriting" | undefined, renderStyle: "clean" | "sketch" | undefined): { fontFamily: "sans" | "serif" | "mono" | "handwriting"; renderStyle: "clean" | "sketch" } {
+    const clean = this.onArtboard(parentId);
+    return { fontFamily: fontFamily ?? (clean ? "sans" : "handwriting"), renderStyle: renderStyle ?? (clean ? "clean" : "sketch") };
+  }
+
   applyOperation(operation: CanvasOperation, source: "human" | "agent"): string[] {
     const created: string[] = [];
     if (operation.type === "create_shape" && (operation.kind === "diamond" || operation.kind === "triangle")) {
@@ -136,8 +155,9 @@ export class BoardStore extends EventTarget {
       this.document.elements.push(element); created.push(element.id);
       if (source === "agent" && !this.document.agentElementIds.includes(element.id)) this.document.agentElementIds.push(element.id);
     } else if (operation.type === "create_text" || operation.type === "create_highlight" || operation.type === "create_shape" || operation.type === "create_arrow" || operation.type === "create_stroke" || operation.type === "create_polygon") {
-      const normalized = operation.type === "create_text" && source === "agent" ? { ...operation, fontFamily: operation.fontFamily ?? "handwriting", renderStyle: operation.renderStyle ?? "sketch" as const } : operation;
+      const normalized = operation.type === "create_text" && source === "agent" ? { ...operation, ...this.agentTextStyle(operation.parentId, operation.fontFamily, operation.renderStyle) } : operation;
       const element = operationElement(normalized);
+      if ("renderStyle" in operation && operation.renderStyle && element.type !== "text") element.renderStyle = operation.renderStyle;
       this.document.elements.push(element); created.push(element.id);
       if (source === "agent" && !this.document.agentElementIds.includes(element.id)) this.document.agentElementIds.push(element.id);
     } else if (operation.type === "create_icon") {
@@ -151,10 +171,10 @@ export class BoardStore extends EventTarget {
       if (source === "agent" && this.document.turn) this.document.turn.agentMarkers.push({ id: operation.id ?? `agent-marker-${crypto.randomUUID()}`, kind: operation.points?.length ? "stroke" : "note", points: operation.points?.map((point) => ({ ...point, pressure: point.pressure ?? .5 })), x: operation.x, y: operation.y, text: operation.text?.slice(0, 300), anchorId: operation.anchorId });
     } else if (operation.type === "create_note") {
       const prefix = operation.id ?? `note-${crypto.randomUUID()}`; const width = Math.max(120, operation.width ?? 320);
-      const noteFont = source === "agent" ? "handwriting" as const : "sans" as const;
+      const noteFont = source === "agent" && !this.onArtboard(operation.parentId) ? "handwriting" as const : "sans" as const;
       const height = Math.max(90, operation.height ?? Math.round(measureTextBlock({ text: operation.text, width: Math.max(84, width - 36), fontSize: 24, blockStyle: operation.blockStyle, fontFamily: noteFont }).height + 36));
-      const shape = operationElement({ type: "create_shape", id: `${prefix}-card`, kind: "rectangle", x: operation.x, y: operation.y, width, height, color: operation.color ?? "#080808", strokeWidth: 2, fillColor: operation.fillColor ?? "#fff4b8", fillOpacity: 0.72, radius: 18 }); shape.renderStyle = operation.renderStyle ?? (source === "agent" ? "sketch" : "clean"); shape.semanticRole = "note";
-      const text = operationElement({ type: "create_text", id: `${prefix}-text`, x: operation.x + 18, y: operation.y + 18, width: width - 36, text: operation.text, fontSize: 24, color: operation.color ?? "#080808", fontFamily: noteFont, blockStyle: operation.blockStyle ?? "body", renderStyle: operation.renderStyle, semanticRole: "note-body" });
+      const shape = operationElement({ type: "create_shape", id: `${prefix}-card`, kind: "rectangle", x: operation.x, y: operation.y, width, height, color: operation.color ?? "#080808", strokeWidth: 2, fillColor: operation.fillColor ?? "#fff4b8", fillOpacity: 0.72, radius: 18 }); shape.renderStyle = operation.renderStyle ?? (source === "agent" && !this.onArtboard(operation.parentId) ? "sketch" : "clean"); shape.semanticRole = "note"; shape.parentId = operation.parentId;
+      const text = operationElement({ type: "create_text", id: `${prefix}-text`, x: operation.x + 18, y: operation.y + 18, width: width - 36, text: operation.text, fontSize: 24, color: operation.color ?? "#080808", fontFamily: noteFont, blockStyle: operation.blockStyle ?? "body", renderStyle: shape.renderStyle, semanticRole: "note-body", parentId: operation.parentId });
       this.document.elements.push(shape, text); created.push(shape.id, text.id); (this.document.groups ??= {})[prefix] = [shape.id, text.id]; if (source === "agent") this.document.agentElementIds.push(shape.id, text.id);
     } else if (operation.type === "create_frame") {
       const prefix = operation.id ?? `frame-${crypto.randomUUID()}`; const shape = operationElement({ type: "create_shape", id: `${prefix}-border`, kind: "rectangle", x: operation.x, y: operation.y, width: operation.width, height: operation.height, color: operation.color ?? "#404040", strokeWidth: operation.artboardPreset ? 1.5 : 2, fillColor: operation.backgroundColor ?? "#ffffff", fillOpacity: operation.artboardPreset ? 1 : 0.04, radius: 24, lineStyle: operation.artboardPreset ? "solid" : "dashed", semanticRole: operation.semanticRole ?? (operation.artboardPreset ? "artboard" : "frame"), parentId: operation.parentId, name: operation.name ?? operation.title }); shape.renderStyle = operation.renderStyle; if (operation.artboardPreset) shape.artboard = { preset: operation.artboardPreset, backgroundColor: operation.backgroundColor ?? "#ffffff", clipContent: operation.clipContent ?? false }; this.document.elements.push(shape); created.push(shape.id);
@@ -270,10 +290,11 @@ export class BoardStore extends EventTarget {
       if (source === "agent") this.document.agentElementIds.push(element.id);
     } else if (operation.type === "create_callout") {
       const prefix = operation.id ?? `callout-${crypto.randomUUID()}`; const width = Math.max(120, operation.width ?? 260); const fontSize = Math.max(12, Math.min(48, operation.fontSize ?? 18)); const padding = 14;
-      const measured = measureTextBlock({ text: operation.text, width: width - padding * 2, fontSize, fontFamily: source === "agent" ? "handwriting" : "sans" });
+      const calloutStyle = source === "agent" ? this.agentTextStyle(undefined, undefined, operation.renderStyle) : { fontFamily: "sans" as const, renderStyle: operation.renderStyle ?? "clean" as const };
+      const measured = measureTextBlock({ text: operation.text, width: width - padding * 2, fontSize, fontFamily: calloutStyle.fontFamily });
       const box = operationElement({ type: "create_shape", id: `${prefix}-box`, kind: "rectangle", x: operation.x, y: operation.y, width, height: Math.round(measured.height + padding * 2), color: operation.color ?? "#080808", strokeWidth: 2, fillColor: operation.fillColor ?? "#ffffff", fillOpacity: 1, radius: 14 });
-      box.renderStyle = operation.renderStyle ?? (source === "agent" ? "sketch" : "clean"); box.semanticRole = "callout";
-      const label = operationElement({ type: "create_text", id: `${prefix}-text`, x: operation.x + padding, y: operation.y + padding, width: width - padding * 2, text: operation.text, fontSize, color: operation.color ?? "#080808", fontFamily: source === "agent" ? "handwriting" : "sans", semanticRole: "callout-text" });
+      box.renderStyle = calloutStyle.renderStyle; box.semanticRole = "callout";
+      const label = operationElement({ type: "create_text", id: `${prefix}-text`, x: operation.x + padding, y: operation.y + padding, width: width - padding * 2, text: operation.text, fontSize, color: operation.color ?? "#080808", fontFamily: calloutStyle.fontFamily, renderStyle: calloutStyle.renderStyle, semanticRole: "callout-text" });
       this.document.elements.push(box, label); created.push(box.id, label.id);
       const anchor = operation.anchorId ? this.document.elements.find((element) => element.id === operation.anchorId) : undefined;
       if (anchor) {

@@ -7,7 +7,7 @@ import { CanvasOperation, boundsOverlapArea, connectionRoute, iconNames, iconSeg
 import { composeVisual } from "../web-src/compositions";
 import { exportPages, makeSvg } from "../web-src/export";
 import { measureTextBlock } from "../web-src/measure";
-import { designSystem } from "../web-src/theme";
+import { accents, designSystem } from "../web-src/theme";
 
 const storage = new Map<string, string>();
 Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
@@ -261,12 +261,71 @@ async function main(): Promise<void> {
     assert.equal(store.document.presentation?.index, 1, "a step index beyond the sequence is clamped");
   }
 
+  /* Style follows the context: clean on an artboard, hand-drawn on the open canvas. */
+  {
+    const store = board();
+    store.applyOperation({ type: "create_frame", id: "screen", x: 0, y: 0, width: 900, height: 600, artboardPreset: "desktop", title: "Dashboard" }, "agent");
+    store.applyOperation({ type: "create_text", id: "ui-label", x: 40, y: 120, width: 200, text: "Save changes", parentId: "screen-border" }, "agent");
+    store.applyOperation({ type: "create_text", id: "canvas-label", x: 40, y: 900, width: 200, text: "Why this works" }, "agent");
+    store.applyOperation({ type: "create_note", id: "ui-note", x: 300, y: 200, text: "Inside the mockup", parentId: "screen-border" }, "agent");
+    store.applyOperation({ type: "create_note", id: "canvas-note", x: 300, y: 900, text: "Beside the mockup" }, "agent");
+    const style = (id: string): { family: unknown; render: unknown } => { const element = store.document.elements.find((candidate) => candidate.id === id)!; return { family: element.type === "text" ? element.fontFamily : undefined, render: element.renderStyle }; };
+    assert.deepEqual(style("ui-label"), { family: "sans", render: "clean" }, "UI text on an artboard is drawn cleanly");
+    assert.deepEqual(style("canvas-label"), { family: "handwriting", render: "sketch" }, "an explanation on the open canvas stays hand-drawn");
+    assert.equal(store.document.elements.find((element) => element.id === "ui-note-card")!.renderStyle, "clean", "a note on an artboard is clean too");
+    assert.equal(store.document.elements.find((element) => element.id === "canvas-note-card")!.renderStyle, "sketch");
+
+    store.applyOperation({ type: "create_text", id: "forced", x: 40, y: 200, width: 200, text: "Hand written on purpose", parentId: "screen-border", fontFamily: "handwriting", renderStyle: "sketch" }, "agent");
+    assert.deepEqual(style("forced"), { family: "handwriting", render: "sketch" }, "an explicit style always wins over the automatic one");
+    store.applyOperation({ type: "create_shape", id: "drawn-box", kind: "rectangle", x: 0, y: 1200, width: 200, height: 120, renderStyle: "sketch" }, "agent");
+    const drawn = store.document.elements.find((element) => element.id === "drawn-box")!;
+    assert.equal(drawn.type === "shape" && isSketchShape(drawn), true, "a shape can ask for the hand-drawn look");
+    const plain = store.document.elements.find((element) => element.id === "screen-border")!;
+    assert.equal(plain.type === "shape" && isSketchShape(plain), false, "shapes stay clean unless they ask otherwise");
+  }
+
+  /* Colour is used where it distinguishes something. */
+  {
+    const mindmap = composeVisual({ kind: "mindmap", id: "map", title: "Water", nodes: [{ id: "root", label: "Water" }, { id: "a", label: "Evaporation" }, { id: "b", label: "Condensation" }, { id: "c", label: "Rain" }] });
+    const branchColours = mindmap.filter((operation): operation is Extract<CanvasOperation, { type: "connect" }> => operation.type === "connect").map((operation) => operation.color);
+    assert.equal(new Set(branchColours).size, branchColours.length, "each mindmap branch gets its own colour");
+    assert.ok(branchColours.every((colour) => (accents as readonly string[]).includes(colour!)), "branch colours come from the shared accent set");
+    const root = mindmap.find((operation): operation is Extract<CanvasOperation, { type: "create_shape" }> => operation.type === "create_shape" && operation.id === "map-root");
+    assert.equal(root?.color, "#080808", "the centre of the mindmap stays ink");
+
+    const flowchart = composeVisual({ kind: "flowchart", id: "flow", nodes: [{ id: "step", label: "Start" }, { id: "check", label: "Signed in?", role: "decision" }] });
+    const decision = flowchart.find((operation): operation is Extract<CanvasOperation, { type: "create_shape" }> => operation.type === "create_shape" && operation.id === "flow-check");
+    assert.equal(decision?.color, designSystem.palette.info, "a decision node is marked with a colour");
+
+    const comparison = composeVisual({ kind: "comparison", id: "cmp", sections: [{ heading: "A", body: "one" }, { heading: "B", body: "two" }] });
+    const columns = comparison.filter((operation): operation is Extract<CanvasOperation, { type: "create_note" }> => operation.type === "create_note").map((operation) => operation.fillColor);
+    assert.equal(new Set(columns).size, columns.length, "comparison columns are tinted apart");
+    assert.ok(columns.every((colour) => (designSystem.palette.accentTints as readonly string[]).includes(colour!)));
+  }
+
+  /* A control is never narrower than a word it has to show. */
+  {
+    const mockup = composeVisual({ kind: "ui_mockup", id: "ui", title: "Settings", x: 0, y: 0, width: 760, nodes: [{ id: "head", label: "Settings", role: "header" }, { id: "notify", label: "Notifications", role: "switch" }, { id: "save", label: "Save", role: "button" }] });
+    const shapes = mockup.filter((operation): operation is Extract<CanvasOperation, { type: "create_shape" }> => operation.type === "create_shape");
+    const boxes = shapes.map((shape) => ({ id: shape.id!, minX: shape.x, maxX: shape.x + shape.width, minY: shape.y, maxY: shape.y + shape.height }));
+    for (const [index, first] of boxes.entries()) for (const second of boxes.slice(index + 1)) assert.equal(boundsOverlapArea(first, second), 0, `${first.id} and ${second.id} do not overlap`);
+    const header = boxes.find((entry) => entry.id === "ui-head")!;
+    assert.ok(header.maxX - header.minX > 600, "a header spans its own full-width row");
+    const control = shapes.find((shape) => shape.id === "ui-notify")!;
+    const label = mockup.find((operation): operation is Extract<CanvasOperation, { type: "create_text" }> => operation.type === "create_text" && operation.id === "ui-notify-label")!;
+    assert.ok(measureTextBlock({ text: label.text, width: 10000, fontSize: label.fontSize ?? 20, fontFamily: "handwriting" }).longestWord <= control.width, "the control is wide enough for a word that cannot wrap");
+    const artboard = mockup.find((operation): operation is Extract<CanvasOperation, { type: "create_frame" }> => operation.type === "create_frame")!;
+    for (const entry of boxes) assert.ok(entry.maxY <= artboard.y + artboard.height, `${entry.id} stays inside the artboard`);
+  }
+
   /* The shared design vocabulary reaches the agent. */
   {
     const session = new CollaborationSession(board());
     const inspected = session.inspect("all");
     assert.deepEqual(inspected.designSystem, designSystem);
     assert.equal((inspected.designSystem as typeof designSystem).minimumTouchTarget, 44, "the palette and the lint rule agree on the same numbers");
+    assert.ok((inspected.designSystem as typeof designSystem).guidance.colour.includes("accents"), "the agent is told when to reach for colour");
+    assert.ok((inspected.designSystem as typeof designSystem).guidance.renderStyle.includes("artboard"), "the agent is told when drawing comes out clean");
   }
 
   console.log("authoring tests: ok");
