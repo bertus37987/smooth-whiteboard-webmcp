@@ -49,7 +49,7 @@ export const iconNames: IconName[] = ["check", "close", "plus", "minus", "menu",
 export type ConnectorRoute = "straight" | "orthogonal" | "curved";
 export interface SourceReference { id: string; title: string; url?: string }
 export interface BoardLintIssue {
-  code: "text-overflow" | "off-artboard" | "small-target" | "overlap" | "low-contrast" | "unlabelled-control" | "wordy-card";
+  code: "text-overflow" | "spills-card" | "off-artboard" | "small-target" | "overlap" | "low-contrast" | "unlabelled-control" | "wordy-card";
   severity: "info" | "warning";
   elementIds: string[];
   message: string;
@@ -428,6 +428,18 @@ export function lintBoard(document: WhiteboardDocument): BoardLintIssue[] {
     if (element.parentId) childTextOf.set(element.parentId, true);
     const group = groupOf.get(element.id); if (group) for (const sibling of document.groups?.[group] ?? []) childTextOf.set(sibling, true);
   }
+  /** The card a label was created with: the shape in its own group. A label must fit inside it. */
+  const cardOf = (text: PageElement): PageElement | null => {
+    const group = groupOf.get(text.id); if (!group) return null;
+    const shapes = (document.groups?.[group] ?? []).map((id) => byId.get(id))
+      .filter((member): member is Extract<PageElement, { type: "shape" }> => member?.type === "shape" && (member.kind === "rectangle" || member.kind === "ellipse"));
+    if (!shapes.length) return null;
+    const box = elementBounds(text);
+    // The card is the one the label starts inside; failing that, the biggest shape of the group.
+    return shapes.find((shape) => { const card = elementBounds(shape); return box.minX >= card.minX - 2 && box.minY >= card.minY - 2; })
+      ?? shapes.reduce((widest, shape) => (elementBounds(shape).maxX - elementBounds(shape).minX) > (elementBounds(widest).maxX - elementBounds(widest).minX) ? shape : widest);
+  };
+
   // Smallest filled shape first: a label is judged against the button it sits on, not the page behind it.
   const filledSurfaces = elements
     .filter((element): element is Extract<PageElement, { type: "shape" }> => element.type === "shape" && Boolean(element.fillColor) && (element.fillOpacity ?? 0) > .7)
@@ -437,6 +449,16 @@ export function lintBoard(document: WhiteboardDocument): BoardLintIssue[] {
   for (const element of elements) {
     const bounds = elementBounds(element); const width = bounds.maxX - bounds.minX; const height = bounds.maxY - bounds.minY;
     if (element.type === "text" && element.height !== undefined && estimateTextHeight(element.text, element.width, element.fontSize, element) > element.height + 2) issues.push({ code: "text-overflow", severity: "warning", elementIds: [element.id], message: "Text does not fit its text box.", suggestedFix: "Increase the box height or reduce the font size." });
+    if (element.type === "text" && !element.parentId) {
+      // A card with a fixed height clips its own label, and that is invisible until someone reads it.
+      const card = cardOf(element);
+      if (card) {
+        const box = elementBounds(card);
+        if (bounds.maxY > box.maxY + 2 || bounds.maxX > box.maxX + 2 || bounds.minY < box.minY - 2 || bounds.minX < box.minX - 2) {
+          issues.push({ code: "spills-card", severity: "warning", elementIds: [element.id, card.id], message: "Text sticks out of the card it belongs to.", suggestedFix: "Grow the card with fit_to_content, or shorten the text." });
+        }
+      }
+    }
     if (element.type === "text" && ["note-body", "callout-text"].includes(element.semanticRole ?? "") && element.text.length > 240) issues.push({ code: "wordy-card", severity: "info", elementIds: [element.id], message: "This card carries a paragraph.", suggestedFix: "Keep a headline on the card and move the explanation into a guided step, where the board shows it under the controls." });
     if (CONTROL_ROLES.includes(element.semanticRole ?? "") && (width < 44 || height < 44)) issues.push({ code: "small-target", severity: "warning", elementIds: [element.id], message: "Interactive target is smaller than 44 x 44.", suggestedFix: "Enlarge the control or give it a larger invisible hit area." });
     if (CONTROL_ROLES.includes(element.semanticRole ?? "") && element.type !== "text" && !element.name && !childTextOf.get(element.id)) issues.push({ code: "unlabelled-control", severity: "warning", elementIds: [element.id], message: "Control has no visible label and no name.", suggestedFix: "Add a text label inside the control, group it with one, or set a name." });
@@ -476,7 +498,6 @@ function overlapIssues(elements: PageElement[], groupOf: Map<string, string>): B
     for (let right = left + 1; right < candidates.length && issues.length < 12; right += 1) {
       const a = candidates[left]; const b = candidates[right];
       if (a.element.parentId === b.element.id || b.element.parentId === a.element.id) continue;
-      if (a.element.parentId && a.element.parentId === b.element.parentId && (a.element.type === "text") !== (b.element.type === "text")) continue;
       const group = groupOf.get(a.element.id); if (group && group === groupOf.get(b.element.id)) continue;
       const overlap = boundsOverlapArea(a.bounds, b.bounds); if (overlap <= 0) continue;
       const areaA = Math.max(1, (a.bounds.maxX - a.bounds.minX) * (a.bounds.maxY - a.bounds.minY));
@@ -485,7 +506,10 @@ function overlapIssues(elements: PageElement[], groupOf: Map<string, string>): B
       // A label sitting inside its card is a layout pattern, not a defect.
       const smaller = areaA <= areaB ? a.element : b.element;
       if (smaller.type === "text" && coverage >= .85) continue;
-      if (coverage < .35) continue;
+      // Something clipping the edge of a word is already unreadable, so text is judged more strictly
+      // than two boxes that merely touch.
+      const wordInvolved = (a.element.type === "text") !== (b.element.type === "text");
+      if (coverage < (wordInvolved ? .12 : .35)) continue;
       issues.push({ code: "overlap", severity: "warning", elementIds: [a.element.id, b.element.id], message: "Two unrelated objects overlap.", suggestedFix: "Move one object, or group them if the overlap is intended." });
     }
   }

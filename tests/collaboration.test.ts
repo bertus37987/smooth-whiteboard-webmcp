@@ -844,6 +844,52 @@ async function main(): Promise<void> {
     }
   }
 
+  /* TEST 38 - a card cannot clip the text it was made for, and the lint says so when one does. */
+  {
+    const test = harness();
+    test.session.submit({ promptText: "Cards", instructionInk: [] });
+    const lease = await claim(test);
+    const long = "Jeder Schreibaufruf braucht das Token des laufenden Zugs. Ohne gueltiges Token wird abgelehnt, und der Agent kann nicht von sich aus loslegen.";
+    await test.session.apply([{ type: "create_note", id: "cramped", x: 0, y: 0, width: 300, height: 90, text: long }], undefined, lease.leaseToken);
+
+    const card = test.store.document.elements.find((element) => element.id === "cramped-card")!;
+    const label = test.store.document.elements.find((element) => element.id === "cramped-text")!;
+    assert.ok(elementBounds(card).maxY - elementBounds(card).minY > 90, "an asked-for height is a minimum, not a lid");
+    assert.ok(elementBounds(label).maxY <= elementBounds(card).maxY + 2, "so the label fits inside its card");
+    assert.deepEqual(lintBoard(test.store.document).filter((issue) => issue.code === "spills-card"), [], "and there is nothing to report");
+
+    // Shrink the card by hand: now the label sticks out, and that has to be reported.
+    if (card.type === "shape") card.points = [{ x: 0, y: 0, pressure: .5 }, { x: 300, y: 70, pressure: .5 }];
+    const spills = lintBoard(test.store.document).filter((issue) => issue.code === "spills-card");
+    assert.equal(spills.length, 1, "a label hanging out of its card is a defect the lint names");
+    assert.deepEqual(spills[0].elementIds, ["cramped-text", "cramped-card"]);
+    assert.match(spills[0].suggestedFix, /fit_to_content/, "and it says how to fix it");
+  }
+
+  /* TEST 39 - something clipping the edge of a word is reported, a label inside its box is not. */
+  {
+    const test = harness();
+    humanApply(test.store,
+      { type: "create_text", id: "heading", x: 0, y: 0, width: 300, text: "1 - Die Seite meldet ihre Werkzeuge an", fontSize: 24 },
+      { type: "create_shape", id: "icon", kind: "rectangle", x: 20, y: 40, width: 54, height: 54 });
+    const clipped = lintBoard(test.store.document).filter((issue) => issue.code === "overlap");
+    assert.equal(clipped.length, 1, "a shape sitting on the last line of a heading is flagged");
+
+    const clean = harness();
+    humanApply(clean.store,
+      { type: "create_shape", id: "button", kind: "rectangle", x: 0, y: 0, width: 200, height: 60, filled: true, fillColor: "#ffffff", fillOpacity: 1 },
+      { type: "create_text", id: "button-label", x: 20, y: 18, width: 160, text: "Weiter", fontSize: 18 });
+    assert.deepEqual(lintBoard(clean.store.document).filter((issue) => issue.code === "overlap"), [], "but a label inside its own button is a pattern, not a defect");
+  }
+
+  /* TEST 40 - stepping back from the overview starts the walkthrough, it does not jump to the end. */
+  {
+    const app = readFileSync("web-src/app.ts", "utf8");
+    assert.ok(app.includes("const index = current ? Math.max(0, Math.min(sequence.steps.length - 1, current.index + delta)) : 0;"),
+      "both arrows enter a walkthrough at step one");
+    assert.equal(/delta < 0 \? sequence\.steps\.length - 1/.test(app), false, "and nothing jumps to the last step from the overview");
+  }
+
   console.log("collaboration tests: ok");
 }
 

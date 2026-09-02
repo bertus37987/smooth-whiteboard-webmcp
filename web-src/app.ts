@@ -506,7 +506,9 @@ export class WhiteboardApp {
   /** The active step lives in the document, so a reload keeps it and the agent can move it with present_step. */
   private stepExplanation(delta: number): void {
     const current = this.activeExplanation; const sequence = current?.sequence ?? this.store.document.explanationSequences[0]; if (!sequence?.steps.length) return;
-    const index = current ? Math.max(0, Math.min(sequence.steps.length - 1, current.index + delta)) : delta < 0 ? sequence.steps.length - 1 : 0;
+    // From the overview both arrows start the walkthrough at step one; jumping to the end and
+    // framing a single arrow reads as an empty board.
+    const index = current ? Math.max(0, Math.min(sequence.steps.length - 1, current.index + delta)) : 0;
     this.store.document.presentation = { sequenceId: sequence.id, index }; this.store.changed("metadata");
   }
 

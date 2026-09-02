@@ -258,7 +258,8 @@ export class BoardStore extends EventTarget {
     } else if (operation.type === "create_note") {
       const prefix = operation.id ?? `note-${crypto.randomUUID()}`; const width = Math.max(120, operation.width ?? 320);
       const noteFont = source === "agent" ? this.agentStyle(operation.parentId).fontFamily : "sans" as const;
-      const height = Math.max(90, operation.height ?? Math.round(measureTextBlock({ text: operation.text, width: Math.max(84, width - 36), fontSize: 24, blockStyle: operation.blockStyle, fontFamily: noteFont }).height + 36));
+      const needed = Math.round(measureTextBlock({ text: operation.text, width: Math.max(84, width - 36), fontSize: 24, blockStyle: operation.blockStyle, fontFamily: noteFont }).height + 36);
+      const height = Math.max(90, needed, operation.height ?? 0);
       const shape = operationElement({ type: "create_shape", id: `${prefix}-card`, kind: "rectangle", x: operation.x, y: operation.y, width, height, color: operation.color ?? "#080808", strokeWidth: 2, fillColor: operation.fillColor ?? "#fff4b8", fillOpacity: 0.72, radius: 18 }); shape.renderStyle = operation.renderStyle ?? (source === "agent" ? this.agentStyle(operation.parentId).renderStyle : "clean"); shape.semanticRole = "note"; shape.parentId = operation.parentId;
       const text = operationElement({ type: "create_text", id: `${prefix}-text`, x: operation.x + 18, y: operation.y + 18, width: width - 36, text: operation.text, fontSize: 24, color: operation.color ?? "#080808", fontFamily: noteFont, blockStyle: operation.blockStyle ?? "body", renderStyle: shape.renderStyle, semanticRole: "note-body", parentId: operation.parentId });
       this.document.elements.push(shape, text); created.push(shape.id, text.id); (this.document.groups ??= {})[prefix] = [shape.id, text.id]; if (source === "agent") this.document.agentElementIds.push(shape.id, text.id);
