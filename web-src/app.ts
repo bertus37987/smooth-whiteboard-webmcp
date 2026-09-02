@@ -60,6 +60,8 @@ export class WhiteboardApp {
   private readonly explanationControls = byId<HTMLElement>("explanation-controls");
   private activeExplanation: { sequence: ExplanationSequence; index: number } | null = null;
   private presentationKey = "";
+  /** Whether this browser offered a WebMCP host at all; a note to nobody deserves saying so. */
+  private agentAvailable = false;
   private readonly abort = new AbortController();
   private readonly handwriting = new EnglishHandwritingAssist();
   private handwritingTimer = 0;
@@ -80,6 +82,7 @@ export class WhiteboardApp {
     this.renderer.agentMarkers = structuredClone(this.store.document.turn?.agentMarkers ?? []); this.renderer.activeAgentIds = new Set(this.store.document.turn?.pendingChangeIds ?? []); this.promptInput.value = this.store.document.turn?.promptText ?? "";
     this.bindToolbar(); this.bindSelectionTools(); this.bindCanvas(); this.bindKeyboard(); this.bindCollaboration(); this.bindSettings(); this.bindFiles(); this.bindExplanationControls(); this.bindResponsiveLayout();
     this.store.addEventListener("change", () => { this.renderer.request(); this.updateUi(); });
+    this.store.onStorageChange = (working) => this.setStatus(working ? "Saving works again" : "Out of browser storage — this board is no longer being saved. Export it to keep it.", working ? 2600 : 0);
     this.renderer.request(); this.updateUi();
     void registerWhiteboardTools({
       session: () => this.collaboration.session(),
@@ -92,7 +95,7 @@ export class WhiteboardApp {
       compose: (input, revision, lease, signal) => this.collaboration.compose(input, revision, lease, signal),
       complete: (summary, lease) => this.collaboration.complete(summary, lease)
     }, this.abort.signal)
-      .then((available) => this.setStatus(available ? "WebMCP ready" : "Browser without WebMCP – drawing remains available", 2600))
+      .then((available) => { this.agentAvailable = available; this.setStatus(available ? "WebMCP ready" : "Browser without WebMCP – drawing remains available", 2600); })
       .catch(() => this.setStatus("WebMCP konnte nicht registriert werden", 2600));
   }
 
@@ -101,7 +104,7 @@ export class WhiteboardApp {
       const tool = button.dataset.tool as BoardTool; button.innerHTML = icon(tool); button.addEventListener("click", () => this.setTool(tool));
     });
     for (const [id, name, action] of [
-      ["undo", "undo", () => this.humanUndo()], ["redo", "redo", () => this.humanRedo()], ["fit", "fit", () => { this.renderer.fitAll(); this.updateContextPrompt(); }], ["clear", "trash", () => this.clearBoard()]
+      ["undo", "undo", () => this.humanUndo()], ["redo", "redo", () => this.humanRedo()], ["fit", "fit", () => { this.renderer.fitAll(); this.updateContextPrompt(); }], ["clear", "trash", () => this.clearBoard()], ["withdraw-turn", "close", () => this.withdrawHumanTurn()]
     ] as const) { const button = byId<HTMLButtonElement>(id); button.innerHTML = icon(name); button.addEventListener("click", action); }
     byId<HTMLButtonElement>("image-tool").addEventListener("click", () => this.imageInput.click());
     document.querySelectorAll<HTMLButtonElement>("[data-color]").forEach((button) => button.addEventListener("click", () => {
@@ -487,11 +490,19 @@ export class WhiteboardApp {
   /** One entry point for a human turn: the session owns validation, context freezing and queueing. */
   private submitHumanTurn(): void {
     const outcome = this.collaboration.submit({ promptText: this.promptInput.value, instructionInk: this.renderer.instructionInk, selectionIds: [...this.renderer.selectionIds] });
-    this.setStatus(outcome.message, 2400);
+    // Say plainly when nothing is listening, instead of leaving a note in an empty room.
+    this.setStatus(outcome.ok && !this.agentAvailable ? "Sent, but no agent is connected to this tab" : outcome.message, 3600);
     if (outcome.ok) this.renderer.instructionInk = structuredClone(this.store.document.turn?.instructionInk ?? []);
     this.updateUi();
   }
 
+
+  /** Take a submitted note back, so a turn nobody picks up is not a dead end. */
+  private withdrawHumanTurn(): void {
+    if (!this.collaboration.withdraw()) return;
+    this.renderer.instructionInk = []; this.renderer.agentMarkers = [];
+    this.updateContextPrompt(); this.setStatus("Note taken back", 2000); this.updateUi(); this.renderer.request();
+  }
 
   private parentArtboardAt(point: InkPoint): ShapeElement | undefined {
     return [...this.store.document.elements].reverse().find((element): element is ShapeElement => { if (element.type !== "shape" || !element.artboard) return false; const bounds = boardBounds([element])!; return point.x >= bounds.minX && point.x <= bounds.maxX && point.y >= bounds.minY && point.y <= bounds.maxY; });
@@ -601,6 +612,8 @@ export class WhiteboardApp {
     this.syncSettingBoxes();
     byId<HTMLButtonElement>("undo").disabled = !editable || !this.store.canUndo();
     byId<HTMLButtonElement>("redo").disabled = !editable || !this.store.canRedo();
+    const withdraw = byId<HTMLButtonElement>("withdraw-turn");
+    withdraw.hidden = !this.collaboration.canWithdraw();
     const submit = byId<HTMLButtonElement>("submit-turn"); const busy = ["queued", "claimed", "planning", "working", "review"].includes(state);
     submit.classList.toggle("is-waiting", busy && state !== "review"); submit.disabled = busy;
     this.syncExplanation(); this.updateZoom(); this.updateContextPrompt();

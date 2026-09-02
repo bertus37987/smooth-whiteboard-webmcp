@@ -301,6 +301,21 @@ export class CollaborationSession {
     return this.respond({ ok: true, instruction: "No human turn is queued. You cannot edit yet. Call wait_for_human_turn and wait for the human submit arrow." });
   }
 
+  /**
+   * Takes a submitted note back. Without this the bar is a one-way door: if no agent is listening,
+   * the turn sits queued for ever, the send arrow stays disabled, and a reload does not help.
+   */
+  withdraw(): boolean {
+    const turn = this.store.document.turn;
+    if (turn?.status !== "queued") return false;
+    this.store.document.turn = null;
+    this.store.changed("metadata");
+    return true;
+  }
+
+  /** Whether the human can take their note back right now. */
+  canWithdraw(): boolean { return this.store.document.turn?.status === "queued"; }
+
   waitForTurn(timeoutMs: number, signal?: AbortSignal): Promise<AgentResponse> {
     const turn = this.store.document.turn;
     if (turn?.status === "queued") return Promise.resolve(this.claimTurn(turn));

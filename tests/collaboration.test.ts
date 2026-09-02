@@ -890,6 +890,51 @@ async function main(): Promise<void> {
     assert.equal(/delta < 0 \? sequence\.steps\.length - 1/.test(app), false, "and nothing jumps to the last step from the overview");
   }
 
+  /* TEST 41 - a note nobody picks up can be taken back, so the bar is not a one-way door. */
+  {
+    const test = harness();
+    humanApply(test.store, box("a", 0, 0));
+    assert.equal(test.session.canWithdraw(), false, "there is nothing to take back before sending");
+
+    assert.equal(test.session.submit({ promptText: "Draw", instructionInk: [] }).ok, true);
+    assert.equal(test.session.state(), "queued", "the note waits for an agent");
+    assert.equal(test.session.submit({ promptText: "Again", instructionInk: [] }).ok, false, "and a second note is refused while it waits");
+    assert.equal(test.session.canWithdraw(), true);
+    assert.equal(test.session.withdraw(), true);
+    assert.equal(test.session.state(), "idle", "taking it back frees the bar");
+    assert.equal(test.session.submit({ promptText: "Again", instructionInk: [] }).ok, true, "so the next note goes through");
+
+    // Once an agent holds the turn the note is no longer the human's to pull away.
+    await claim(test);
+    assert.equal(test.session.canWithdraw(), false);
+    assert.equal(test.session.withdraw(), false, "a turn already being worked on cannot be withdrawn");
+
+    const app = readFileSync("web-src/app.ts", "utf8");
+    assert.ok(app.includes("withdraw.hidden = !this.collaboration.canWithdraw()"), "the button shows exactly while there is something to take back");
+    assert.ok(readFileSync("web/index.html", "utf8").includes('id="withdraw-turn"'), "and it exists in the prompt bar");
+  }
+
+  /* TEST 42 - a full browser store is reported, not thrown out of the middle of a drawing. */
+  {
+    const test = harness();
+    let reported: boolean | null = null;
+    test.store.onStorageChange = (working) => { reported = working; };
+    let repaints = 0;
+    test.store.addEventListener("change", () => { repaints += 1; });
+
+    const real = globalThis.localStorage;
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: { ...real, setItem: () => { throw new Error("QuotaExceededError"); } } });
+    humanApply(test.store, box("kept", 0, 0));
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: real });
+
+    assert.equal(reported, false, "the human is told once that saving stopped working");
+    assert.ok(repaints > 0, "the canvas is still told to repaint");
+    assert.ok(test.store.document.elements.some((element) => element.id === "kept"), "and the drawing survives in memory");
+
+    humanApply(test.store, box("later", 400, 0));
+    assert.equal(reported, true, "when saving works again, that is said too");
+  }
+
   console.log("collaboration tests: ok");
 }
 

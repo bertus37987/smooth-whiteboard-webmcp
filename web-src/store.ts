@@ -45,8 +45,23 @@ export class BoardStore extends EventTarget {
   changed(kind: ChangeKind = "content", source: ChangeSource = "human"): void {
     this.refreshConnections(); this.cleanGroups();
     if (kind === "content") { this.document.revision += 1; this.trackMutation(source); }
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(this.document)); this.dispatchEvent(new Event("change"));
+    this.persist(STORAGE_KEY, this.document);
+    this.dispatchEvent(new Event("change"));
   }
+
+  /**
+   * Saving must never take the drawing down with it. A full browser store used to throw out of
+   * every single edit, which also skipped the change event, so the canvas quietly stopped
+   * repainting and nothing ever said that the work was no longer being kept.
+   */
+  private persist(key: string, value: WhiteboardDocument): void {
+    try { localStorage.setItem(key, JSON.stringify(value)); if (this.storageFailed) { this.storageFailed = false; this.onStorageChange?.(true); } }
+    catch { if (!this.storageFailed) { this.storageFailed = true; this.onStorageChange?.(false); } }
+  }
+
+  private storageFailed = false;
+  /** Told the shell when saving starts or stops working, so the human can be warned once. */
+  onStorageChange?: (working: boolean) => void;
 
   /** Content revision the agent inspects; session bookkeeping never advances it. */
   contentRevision(): number { return this.document.revision; }
@@ -94,7 +109,7 @@ export class BoardStore extends EventTarget {
   }
 
   beginAgentContribution(): void {
-    if (!this.agentBefore) { this.agentBefore = cloneBoard(this.document); this.agentRemovedIds.clear(); localStorage.setItem(PRE_AGENT_STORAGE_KEY, JSON.stringify(this.agentBefore)); }
+    if (!this.agentBefore) { this.agentBefore = cloneBoard(this.document); this.agentRemovedIds.clear(); this.persist(PRE_AGENT_STORAGE_KEY, this.agentBefore); }
     if (this.document.turn) this.document.turn.status = "working";
   }
 
