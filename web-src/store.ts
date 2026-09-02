@@ -1,5 +1,7 @@
 import { PageElement, elementBounds } from "../src/document";
-import { Bounds, CanvasOperation, WhiteboardDocument, boardBounds, cloneBoard, connectionPoints, elementSignature, emptyBoard, estimateTextHeight, iconSegments, migrateBoard, operationElement, scaleElement, translateElement } from "./model";
+import { beautifyStroke } from "../src/strokes";
+import { measureTextBlock } from "./measure";
+import { Bounds, CanvasOperation, ConnectorRoute, WhiteboardDocument, boardBounds, cloneBoard, connectionRoute, elementSignature, emptyBoard, estimateTextHeight, iconSegments, migrateBoard, operationElement, polygonShapePoints, scaleElement, translateElement } from "./model";
 
 const STORAGE_KEY = "smooth-whiteboard-v3";
 const LEGACY_STORAGE_KEY = "smooth-whiteboard-v1";
@@ -128,7 +130,12 @@ export class BoardStore extends EventTarget {
 
   applyOperation(operation: CanvasOperation, source: "human" | "agent"): string[] {
     const created: string[] = [];
-    if (operation.type === "create_text" || operation.type === "create_highlight" || operation.type === "create_shape" || operation.type === "create_arrow" || operation.type === "create_stroke" || operation.type === "create_polygon") {
+    if (operation.type === "create_shape" && (operation.kind === "diamond" || operation.kind === "triangle")) {
+      const element = operationElement({ type: "create_polygon", id: operation.id, points: polygonShapePoints(operation.kind, operation.x, operation.y, operation.width, operation.height), closed: true, color: operation.color, strokeWidth: operation.strokeWidth, fillColor: operation.fillColor, fillOpacity: operation.fillOpacity ?? (operation.filled ? .3 : 0) });
+      element.semanticRole = operation.semanticRole; element.parentId = operation.parentId; element.name = operation.name;
+      this.document.elements.push(element); created.push(element.id);
+      if (source === "agent" && !this.document.agentElementIds.includes(element.id)) this.document.agentElementIds.push(element.id);
+    } else if (operation.type === "create_text" || operation.type === "create_highlight" || operation.type === "create_shape" || operation.type === "create_arrow" || operation.type === "create_stroke" || operation.type === "create_polygon") {
       const normalized = operation.type === "create_text" && source === "agent" ? { ...operation, fontFamily: operation.fontFamily ?? "handwriting", renderStyle: operation.renderStyle ?? "sketch" as const } : operation;
       const element = operationElement(normalized);
       this.document.elements.push(element); created.push(element.id);
@@ -143,9 +150,11 @@ export class BoardStore extends EventTarget {
     } else if (operation.type === "create_agent_marker") {
       if (source === "agent" && this.document.turn) this.document.turn.agentMarkers.push({ id: operation.id ?? `agent-marker-${crypto.randomUUID()}`, kind: operation.points?.length ? "stroke" : "note", points: operation.points?.map((point) => ({ ...point, pressure: point.pressure ?? .5 })), x: operation.x, y: operation.y, text: operation.text?.slice(0, 300), anchorId: operation.anchorId });
     } else if (operation.type === "create_note") {
-      const prefix = operation.id ?? `note-${crypto.randomUUID()}`; const width = Math.max(120, operation.width ?? 320); const height = Math.max(90, operation.height ?? 210);
+      const prefix = operation.id ?? `note-${crypto.randomUUID()}`; const width = Math.max(120, operation.width ?? 320);
+      const noteFont = source === "agent" ? "handwriting" as const : "sans" as const;
+      const height = Math.max(90, operation.height ?? Math.round(measureTextBlock({ text: operation.text, width: Math.max(84, width - 36), fontSize: 24, blockStyle: operation.blockStyle, fontFamily: noteFont }).height + 36));
       const shape = operationElement({ type: "create_shape", id: `${prefix}-card`, kind: "rectangle", x: operation.x, y: operation.y, width, height, color: operation.color ?? "#080808", strokeWidth: 2, fillColor: operation.fillColor ?? "#fff4b8", fillOpacity: 0.72, radius: 18 }); shape.renderStyle = operation.renderStyle ?? (source === "agent" ? "sketch" : "clean"); shape.semanticRole = "note";
-      const text = operationElement({ type: "create_text", id: `${prefix}-text`, x: operation.x + 18, y: operation.y + 18, width: width - 36, text: operation.text, fontSize: 24, color: operation.color ?? "#080808", fontFamily: source === "agent" ? "handwriting" : "sans", blockStyle: operation.blockStyle ?? "body", renderStyle: operation.renderStyle, semanticRole: "note-body" });
+      const text = operationElement({ type: "create_text", id: `${prefix}-text`, x: operation.x + 18, y: operation.y + 18, width: width - 36, text: operation.text, fontSize: 24, color: operation.color ?? "#080808", fontFamily: noteFont, blockStyle: operation.blockStyle ?? "body", renderStyle: operation.renderStyle, semanticRole: "note-body" });
       this.document.elements.push(shape, text); created.push(shape.id, text.id); (this.document.groups ??= {})[prefix] = [shape.id, text.id]; if (source === "agent") this.document.agentElementIds.push(shape.id, text.id);
     } else if (operation.type === "create_frame") {
       const prefix = operation.id ?? `frame-${crypto.randomUUID()}`; const shape = operationElement({ type: "create_shape", id: `${prefix}-border`, kind: "rectangle", x: operation.x, y: operation.y, width: operation.width, height: operation.height, color: operation.color ?? "#404040", strokeWidth: operation.artboardPreset ? 1.5 : 2, fillColor: operation.backgroundColor ?? "#ffffff", fillOpacity: operation.artboardPreset ? 1 : 0.04, radius: 24, lineStyle: operation.artboardPreset ? "solid" : "dashed", semanticRole: operation.semanticRole ?? (operation.artboardPreset ? "artboard" : "frame"), parentId: operation.parentId, name: operation.name ?? operation.title }); shape.renderStyle = operation.renderStyle; if (operation.artboardPreset) shape.artboard = { preset: operation.artboardPreset, backgroundColor: operation.backgroundColor ?? "#ffffff", clipContent: operation.clipContent ?? false }; this.document.elements.push(shape); created.push(shape.id);
@@ -170,11 +179,13 @@ export class BoardStore extends EventTarget {
       const ids = this.expandGroupIds([operation.id]); const elements = this.elementsFor(ids); const from = boardBounds(elements);
       if (from) { const to = { minX: operation.x, minY: operation.y, maxX: operation.x + Math.max(8, operation.width), maxY: operation.y + Math.max(8, operation.height) }; elements.forEach((element) => scaleElement(element, from, to)); }
     } else if (operation.type === "update_text") {
-      const element = this.document.elements.find((candidate) => candidate.id === operation.id); if (element?.type === "text") { element.text = operation.text; element.height = estimateTextHeight(element.text, element.width, element.fontSize); }
+      const element = this.document.elements.find((candidate) => candidate.id === operation.id); if (element?.type === "text") { element.text = operation.text; element.height = estimateTextHeight(element.text, element.width, element.fontSize, element); }
     } else if (operation.type === "update_points") {
       const element = this.document.elements.find((candidate) => candidate.id === operation.id); if (element?.type === "stroke" || element?.type === "shape" || element?.type === "highlight") element.points = operation.points.map((point) => ({ ...point, pressure: point.pressure ?? 0.5 }));
     } else if (operation.type === "update_style") {
-      const expanded = this.expandGroupIds(operation.ids); for (const element of this.elementsFor(expanded)) {
+      const expanded = this.expandGroupIds(operation.ids);
+      if (operation.route) for (const id of expanded) { const connection = (this.document.connections ??= {})[id]; if (connection) connection.route = operation.route; }
+      for (const element of this.elementsFor(expanded)) {
         if (operation.color && "color" in element) element.color = operation.color;
         if (operation.opacity !== undefined) element.opacity = Math.max(0, Math.min(1, operation.opacity));
         if (operation.renderStyle) element.renderStyle = operation.renderStyle;
@@ -189,7 +200,7 @@ export class BoardStore extends EventTarget {
         } else if (element.type === "text") {
           if (operation.fontSize !== undefined) element.fontSize = Math.max(10, Math.min(180, operation.fontSize));
           if (operation.fontFamily) element.fontFamily = operation.fontFamily; if (operation.fontWeight) element.fontWeight = operation.fontWeight; if (operation.fontStyle) element.fontStyle = operation.fontStyle; if (operation.textDecoration) element.textDecoration = operation.textDecoration; if (operation.textAlign) element.textAlign = operation.textAlign; if (operation.blockStyle) element.blockStyle = operation.blockStyle; if (operation.highlightColor !== undefined) element.highlightColor = operation.highlightColor || undefined;
-          element.height = estimateTextHeight(element.text, element.width, element.fontSize);
+          element.height = estimateTextHeight(element.text, element.width, element.fontSize, element);
         }
       }
     } else if (operation.type === "set_locked") {
@@ -200,12 +211,13 @@ export class BoardStore extends EventTarget {
     } else if (operation.type === "connect") {
       const from = this.document.elements.find((element) => element.id === operation.fromId); const to = this.document.elements.find((element) => element.id === operation.toId);
       if (from && to) {
-        const points = connectionPoints(from, to); const arrow = operationElement({ type: "create_arrow", id: operation.id, from: points.from, to: points.to, color: operation.color, strokeWidth: operation.strokeWidth });
+        const route = connectionRoute(from, to, operation.route ?? "straight"); const arrow = operationElement({ type: "create_arrow", id: operation.id, from: route[0], to: route.at(-1)!, color: operation.color, strokeWidth: operation.strokeWidth });
+        if (arrow.type === "shape") arrow.points = route;
         this.document.elements.push(arrow); created.push(arrow.id); if (source === "agent") this.document.agentElementIds.push(arrow.id);
-        const connection = { fromId: from.id, toId: to.id, labelId: undefined as string | undefined };
+        const connection = { fromId: from.id, toId: to.id, labelId: undefined as string | undefined, route: operation.route ?? "straight" as ConnectorRoute };
         if (operation.label) {
-          const fontSize = 16; const width = Math.max(96, Math.min(260, operation.label.length * 8.5 + 20));
-          const label = operationElement({ type: "create_text", x: (points.from.x + points.to.x) / 2 - width / 2, y: (points.from.y + points.to.y) / 2 - fontSize / 2, width, fontSize, text: operation.label, fontFamily: source === "agent" ? "handwriting" : "sans" });
+          const fontSize = 16; const width = Math.max(96, Math.min(260, operation.label.length * 8.5 + 20)); const middle = route[Math.floor(route.length / 2)];
+          const label = operationElement({ type: "create_text", x: middle.x - width / 2, y: middle.y - fontSize / 2, width, fontSize, text: operation.label, fontFamily: source === "agent" ? "handwriting" : "sans" });
           this.document.elements.push(label); created.push(label.id); if (source === "agent") this.document.agentElementIds.push(label.id);
           connection.labelId = label.id;
         }
@@ -243,6 +255,74 @@ export class BoardStore extends EventTarget {
       for (const element of this.elementsFor(this.expandGroupIds(operation.ids))) if (element.id !== operation.parentId) element.parentId = operation.parentId;
     } else if (operation.type === "update_artboard") {
       const element = this.document.elements.find((candidate) => candidate.id === operation.id); if (element?.type === "shape" && (element.artboard || element.semanticRole === "artboard")) { element.semanticRole = "artboard"; element.name = operation.name ?? element.name; element.artboard = { preset: operation.preset ?? element.artboard?.preset ?? "custom", backgroundColor: operation.backgroundColor ?? element.artboard?.backgroundColor ?? "#ffffff", clipContent: operation.clipContent ?? element.artboard?.clipContent ?? false }; element.fillColor = element.artboard.backgroundColor; element.fillOpacity = 1; if (!this.document.artboardIds.includes(element.id)) this.document.artboardIds.push(element.id); }
+    } else if (operation.type === "create_path") {
+      // Models emit coarse points: bow turns two points into an arc, smoothing makes the rest look drawn.
+      let points = operation.points.map((point) => ({ x: point.x, y: point.y, pressure: .5 }));
+      if (points.length === 2 && operation.bow) {
+        const [start, end] = points; const dx = end.x - start.x; const dy = end.y - start.y; const length = Math.max(1, Math.hypot(dx, dy));
+        const control = { x: (start.x + end.x) / 2 - dy / length * operation.bow, y: (start.y + end.y) / 2 + dx / length * operation.bow };
+        points = Array.from({ length: 17 }, (_, index) => { const t = index / 16; const inverse = 1 - t; return { x: inverse * inverse * start.x + 2 * inverse * t * control.x + t * t * end.x, y: inverse * inverse * start.y + 2 * inverse * t * control.y + t * t * end.y, pressure: .5 }; });
+      }
+      if (operation.smooth !== false && points.length > 3) points = beautifyStroke(points, .16);
+      const element = operationElement({ type: "create_polygon", id: operation.id, points, closed: operation.closed === true, color: operation.color, strokeWidth: operation.strokeWidth, fillColor: operation.fillColor, fillOpacity: operation.fillOpacity });
+      element.renderStyle = operation.renderStyle;
+      this.document.elements.push(element); created.push(element.id);
+      if (source === "agent") this.document.agentElementIds.push(element.id);
+    } else if (operation.type === "create_callout") {
+      const prefix = operation.id ?? `callout-${crypto.randomUUID()}`; const width = Math.max(120, operation.width ?? 260); const fontSize = Math.max(12, Math.min(48, operation.fontSize ?? 18)); const padding = 14;
+      const measured = measureTextBlock({ text: operation.text, width: width - padding * 2, fontSize, fontFamily: source === "agent" ? "handwriting" : "sans" });
+      const box = operationElement({ type: "create_shape", id: `${prefix}-box`, kind: "rectangle", x: operation.x, y: operation.y, width, height: Math.round(measured.height + padding * 2), color: operation.color ?? "#080808", strokeWidth: 2, fillColor: operation.fillColor ?? "#ffffff", fillOpacity: 1, radius: 14 });
+      box.renderStyle = operation.renderStyle ?? (source === "agent" ? "sketch" : "clean"); box.semanticRole = "callout";
+      const label = operationElement({ type: "create_text", id: `${prefix}-text`, x: operation.x + padding, y: operation.y + padding, width: width - padding * 2, text: operation.text, fontSize, color: operation.color ?? "#080808", fontFamily: source === "agent" ? "handwriting" : "sans", semanticRole: "callout-text" });
+      this.document.elements.push(box, label); created.push(box.id, label.id);
+      const anchor = operation.anchorId ? this.document.elements.find((element) => element.id === operation.anchorId) : undefined;
+      if (anchor) {
+        const route = connectionRoute(box, anchor, "straight");
+        const leader = operationElement({ type: "create_arrow", id: `${prefix}-leader`, from: route[0], to: route.at(-1)!, color: operation.color ?? "#404040", strokeWidth: 1.8 });
+        this.document.elements.push(leader); created.push(leader.id);
+      }
+      (this.document.groups ??= {})[prefix] = [...created];
+      if (source === "agent") this.document.agentElementIds.push(...created);
+    } else if (operation.type === "auto_layout") {
+      const units = this.operationUnits(operation.ids).map((ids) => ({ ids, bounds: boardBounds(this.elementsFor(ids)) })).filter((unit): unit is { ids: string[]; bounds: NonNullable<ReturnType<typeof boardBounds>> } => Boolean(unit.bounds));
+      const start = boardBounds(this.elementsFor(this.expandGroupIds(operation.ids)));
+      if (units.length > 1 && start) {
+        const gap = Math.max(0, operation.gap ?? 28);
+        const columns = operation.direction === "row" ? units.length : operation.direction === "column" ? 1 : Math.max(1, Math.round(operation.columns ?? Math.ceil(Math.sqrt(units.length))));
+        const columnWidths: number[] = []; const rowHeights: number[] = [];
+        units.forEach((unit, index) => {
+          const column = index % columns; const row = Math.floor(index / columns);
+          columnWidths[column] = Math.max(columnWidths[column] ?? 0, unit.bounds.maxX - unit.bounds.minX);
+          rowHeights[row] = Math.max(rowHeights[row] ?? 0, unit.bounds.maxY - unit.bounds.minY);
+        });
+        const offset = (sizes: number[], index: number): number => sizes.slice(0, index).reduce((total, size) => total + size + gap, 0);
+        units.forEach((unit, index) => {
+          const column = index % columns; const row = Math.floor(index / columns);
+          const height = unit.bounds.maxY - unit.bounds.minY; const slack = (rowHeights[row] ?? height) - height;
+          const cross = operation.align === "center" ? slack / 2 : operation.align === "end" ? slack : 0;
+          const dx = start.minX + offset(columnWidths, column) - unit.bounds.minX;
+          const dy = start.minY + offset(rowHeights, row) + cross - unit.bounds.minY;
+          this.elementsFor(unit.ids).forEach((element) => translateElement(element, dx, dy));
+        });
+      }
+    } else if (operation.type === "fit_to_content") {
+      const target = this.document.elements.find((element) => element.id === operation.id);
+      const padding = Math.max(0, operation.padding ?? 18);
+      const mode = operation.mode ?? (target?.type === "text" ? "text" : "container");
+      if (target?.type === "text" && mode === "text") target.height = estimateTextHeight(target.text, target.width, target.fontSize, target);
+      else if (target?.type === "shape" && (target.kind === "rectangle" || target.kind === "ellipse")) {
+        const groupId = this.groupIdFor(target.id); const members = groupId ? this.document.groups?.[groupId] ?? [] : [];
+        const texts = this.document.elements.filter((element): element is Extract<PageElement, { type: "text" }> => element.type === "text" && (element.parentId === target.id || members.includes(element.id)));
+        const box = boardBounds([target]);
+        if (texts.length && box) {
+          const bottom = texts.reduce((lowest, text) => { text.height = estimateTextHeight(text.text, text.width, text.fontSize, text); return Math.max(lowest, text.baseline - text.fontSize + text.height); }, box.minY);
+          const height = Math.max(40, bottom - box.minY + padding);
+          target.points = [{ x: box.minX, y: box.minY, pressure: .5 }, { x: box.maxX, y: box.minY + height, pressure: .5 }];
+        }
+      }
+    } else if (operation.type === "present_step") {
+      const sequence = operation.sequenceId ? this.document.explanationSequences.find((candidate) => candidate.id === operation.sequenceId) : this.document.explanationSequences[0];
+      if (sequence?.steps.length) this.document.presentation = { sequenceId: sequence.id, index: Math.max(0, Math.min(sequence.steps.length - 1, Math.round(operation.index))) };
     } else if (operation.type === "set_explanation_sequence") {
       const index = this.document.explanationSequences.findIndex((sequence) => sequence.id === operation.sequence.id); const copy = structuredClone(operation.sequence); if (index >= 0) this.document.explanationSequences[index] = copy; else this.document.explanationSequences.push(copy);
     } else {
@@ -266,14 +346,15 @@ export class BoardStore extends EventTarget {
         this.document.agentElementIds = this.document.agentElementIds.filter((id) => !removeIds.has(id));
         delete connections[arrowId]; continue;
       }
-      const points = connectionPoints(from, to); arrow.points = [points.from, points.to];
+      const route = connectionRoute(from, to, connection.route ?? "straight"); arrow.points = route;
       if (connection.labelId) {
         const label = this.document.elements.find((element) => element.id === connection.labelId);
         if (label?.type === "text") {
-          const distance = Math.hypot(points.to.x - points.from.x, points.to.y - points.from.y);
+          const start = route[0]; const end = route.at(-1)!; const middle = route[Math.floor(route.length / 2)];
+          const distance = Math.hypot(end.x - start.x, end.y - start.y);
           const offsetY = distance < label.width + 40 ? 34 : 0;
-          label.x = (points.from.x + points.to.x) / 2 - label.width / 2;
-          label.baseline = (points.from.y + points.to.y) / 2 + label.fontSize / 2 - offsetY;
+          label.x = middle.x - label.width / 2;
+          label.baseline = middle.y + label.fontSize / 2 - offsetY;
         }
       }
     }

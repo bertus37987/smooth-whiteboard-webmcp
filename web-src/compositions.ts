@@ -1,4 +1,6 @@
 import { CanvasOperation } from "./model";
+import { TextBlock, measureTextBlock } from "./measure";
+import { palette, radius, spacing, typeScale } from "./theme";
 
 export type VisualKind = "flowchart" | "mindmap" | "ui_wireframe" | "ui_mockup" | "research_report" | "math_steps" | "plot" | "study_note" | "timeline" | "comparison" | "hierarchy" | "visual_explainer" | "guided_explainer";
 
@@ -58,35 +60,70 @@ function idsFor(prefix: string, node: VisualNodeInput): { shape: string; text: s
   const id = cleanId(node.id); return { shape: `${prefix}-${id}`, text: `${prefix}-${id}-label`, group: `${prefix}-${id}-group` };
 }
 
+const CARD_PADDING = spacing.md;
+/** Composed text is applied by the agent, and the store renders agent text in the handwriting face: measure that face. */
+const AGENT_FONT = "handwriting" as const;
+
+const cardText = (node: VisualNodeInput): string => node.detail ? `${node.label}\n${node.detail}` : node.label;
+const cardFontSize = (node: VisualNodeInput): number => node.detail ? typeScale.detail.fontSize : typeScale.body.fontSize;
+const cardTextWidth = (width: number): number => Math.max(60, width - CARD_PADDING * 2);
+
+/** How tall a card has to be for its own text — measured with the renderer's font, not guessed. */
+export function cardHeight(node: VisualNodeInput, width: number, minimum = 96): number {
+  const measured = measureTextBlock({ text: cardText(node), width: cardTextWidth(width), fontSize: cardFontSize(node), fontFamily: AGENT_FONT });
+  return Math.max(minimum, Math.round(measured.height + CARD_PADDING * 2));
+}
+
+/** Row heights for a grid of cards: every row is as tall as its tallest card, never a fixed stride. */
+function gridRowHeights(nodes: VisualNodeInput[], columns: number, cardWidth: (node: VisualNodeInput) => number, minimum: number): number[] {
+  const heights: number[] = [];
+  nodes.forEach((node, index) => {
+    const row = Math.floor(index / columns); const height = node.height ?? cardHeight(node, cardWidth(node), minimum);
+    heights[row] = Math.max(heights[row] ?? 0, height);
+  });
+  return heights;
+}
+
+const rowOffset = (heights: number[], row: number, gap: number): number => heights.slice(0, row).reduce((total, height) => total + height + gap, 0);
+
+/** Height a sticky note needs for its text, matching the padding the store gives note bodies. */
+function noteHeight(text: string, width: number, blockStyle?: TextBlock["blockStyle"], minimum = 90): number {
+  return Math.max(minimum, Math.round(measureTextBlock({ text, width: Math.max(84, width - 36), fontSize: 24, blockStyle, fontFamily: AGENT_FONT }).height + 36));
+}
+
 function cardOperations(prefix: string, node: VisualNodeInput, x: number, y: number, width: number, height: number, ellipse = false): CanvasOperation[] {
-  const ids = idsFor(prefix, node); const text = node.detail ? `${node.label}\n${node.detail}` : node.label; const fontSize = node.detail ? 18 : 20;
+  const ids = idsFor(prefix, node); const text = cardText(node); const fontSize = cardFontSize(node);
   const emphasized = node.role === "primary" || node.role === "button";
+  const textWidth = cardTextWidth(width);
+  const measured = measureTextBlock({ text, width: textWidth, fontSize, fontFamily: AGENT_FONT });
+  const boxHeight = Math.max(height, Math.round(measured.height + CARD_PADDING * 2));
   return [
-    { type: "create_shape", id: ids.shape, kind: ellipse ? "ellipse" : "rectangle", x, y, width, height, color: "#080808", strokeWidth: emphasized ? 4 : 2.5, fillColor: emphasized ? "#c0c0c0" : "#ffffff", fillOpacity: emphasized ? 0.32 : 1, radius: ellipse ? undefined : node.role === "button" || node.role === "input" ? 24 : 16 },
-    { type: "create_text", id: ids.text, x: x + 16, y: y + Math.max(12, (height - fontSize * (node.detail ? 2.3 : 1.2)) / 2), width: Math.max(60, width - 32), fontSize, color: "#080808", text },
+    { type: "create_shape", id: ids.shape, kind: ellipse ? "ellipse" : "rectangle", x, y, width, height: boxHeight, color: palette.ink, strokeWidth: emphasized ? 4 : 2.5, fillColor: emphasized ? palette.hairline : palette.surface, fillOpacity: emphasized ? 0.32 : 1, radius: ellipse ? undefined : node.role === "button" || node.role === "input" ? radius.control : radius.card },
+    { type: "create_text", id: ids.text, x: x + CARD_PADDING, y: y + Math.max(CARD_PADDING * .6, (boxHeight - measured.height) / 2), width: textWidth, fontSize, color: palette.ink, text },
     { type: "group", groupId: ids.group, ids: [ids.shape, ids.text] }
   ];
 }
 
 function titleOperations(prefix: string, title: string | undefined, x: number, y: number, width: number): CanvasOperation[] {
-  return title ? [{ type: "create_text", id: `${prefix}-title`, x, y, width, fontSize: 34, color: "#080808", text: title, fontWeight: 700, blockStyle: "heading-1", renderStyle: "sketch" }] : [];
+  return title ? [{ type: "create_text", id: `${prefix}-title`, x, y, width, fontSize: typeScale.title.fontSize, color: palette.ink, text: title, fontWeight: typeScale.title.fontWeight, blockStyle: "heading-1", renderStyle: "sketch" }] : [];
 }
 
 function flowchart(input: VisualCompositionInput, prefix: string): CanvasOperation[] {
-  const nodes = input.nodes ?? []; const x = input.x ?? -420; const y = input.y ?? -260; const width = input.width ?? 900; const columns = Math.max(1, Math.min(4, Math.ceil(Math.sqrt(nodes.length || 1)))); const cardWidth = Math.min(220, (width - (columns - 1) * 90) / columns); const cardHeight = 108;
+  const nodes = input.nodes ?? []; const x = input.x ?? -420; const y = input.y ?? -260; const width = input.width ?? 900; const columns = Math.max(1, Math.min(4, Math.ceil(Math.sqrt(nodes.length || 1)))); const cardWidth = Math.min(220, (width - (columns - 1) * 90) / columns);
+  const heights = gridRowHeights(nodes, columns, (node) => node.width ?? cardWidth, 96);
   const operations = titleOperations(prefix, input.title, x, y - 70, width); const nodeIds = new Map<string, string>();
-  nodes.forEach((node, index) => { const px = node.x ?? x + (index % columns) * (cardWidth + 90); const py = node.y ?? y + Math.floor(index / columns) * 190; const w = node.width ?? cardWidth; const h = node.height ?? cardHeight; operations.push(...cardOperations(prefix, node, px, py, w, h, node.role === "decision")); nodeIds.set(node.id, idsFor(prefix, node).shape); });
+  nodes.forEach((node, index) => { const row = Math.floor(index / columns); const px = node.x ?? x + (index % columns) * (cardWidth + 90); const py = node.y ?? y + rowOffset(heights, row, 82); const w = node.width ?? cardWidth; const h = node.height ?? heights[row]; operations.push(...cardOperations(prefix, node, px, py, w, h, node.role === "decision")); nodeIds.set(node.id, idsFor(prefix, node).shape); });
   const edges: VisualEdgeInput[] = input.edges ?? nodes.filter((node) => node.parentId).map((node) => ({ fromId: node.parentId!, toId: node.id }));
-  for (const [index, edge] of edges.entries()) { const fromId = nodeIds.get(edge.fromId); const toId = nodeIds.get(edge.toId); if (fromId && toId) operations.push({ type: "connect", id: `${prefix}-edge-${index}`, fromId, toId, label: edge.label, color: "#080808", strokeWidth: 2.5 }); }
+  for (const [index, edge] of edges.entries()) { const fromId = nodeIds.get(edge.fromId); const toId = nodeIds.get(edge.toId); if (fromId && toId) operations.push({ type: "connect", id: `${prefix}-edge-${index}`, fromId, toId, label: edge.label, color: palette.ink, strokeWidth: 2.5, route: "orthogonal" }); }
   return operations;
 }
 
 function mindmap(input: VisualCompositionInput, prefix: string): CanvasOperation[] {
   const nodes = input.nodes ?? []; if (!nodes.length) return titleOperations(prefix, input.title, input.x ?? -180, (input.y ?? 0) - 100, 360);
   const centerX = input.x ?? 0; const centerY = input.y ?? 0; const radiusX = Math.max(320, (input.width ?? 900) / 2); const radiusY = Math.max(220, (input.height ?? 620) / 2); const operations = titleOperations(prefix, input.title, centerX - 220, centerY - radiusY - 100, 440); const nodeIds = new Map<string, string>(); const root = nodes[0];
-  nodes.forEach((node, index) => { const angle = index === 0 ? 0 : (index - 1) / Math.max(1, nodes.length - 1) * Math.PI * 2 - Math.PI / 2; const w = node.width ?? (index === 0 ? 220 : 180); const h = node.height ?? (index === 0 ? 110 : 86); const px = node.x ?? (index === 0 ? centerX - w / 2 : centerX + Math.cos(angle) * radiusX - w / 2); const py = node.y ?? (index === 0 ? centerY - h / 2 : centerY + Math.sin(angle) * radiusY - h / 2); operations.push(...cardOperations(prefix, { ...node, role: index === 0 ? "primary" : node.role }, px, py, w, h, true)); nodeIds.set(node.id, idsFor(prefix, node).shape); });
-  nodes.slice(1).forEach((node, index) => { const fromId = nodeIds.get(node.parentId ?? root.id); const toId = nodeIds.get(node.id); if (fromId && toId) operations.push({ type: "connect", id: `${prefix}-branch-${index}`, fromId, toId, color: "#404040", strokeWidth: 2 }); });
-  for (const [index, edge] of (input.edges ?? []).entries()) { const fromId = nodeIds.get(edge.fromId); const toId = nodeIds.get(edge.toId); if (fromId && toId) operations.push({ type: "connect", id: `${prefix}-edge-${index}`, fromId, toId, label: edge.label, color: "#404040", strokeWidth: 2 }); }
+  nodes.forEach((node, index) => { const angle = index === 0 ? 0 : (index - 1) / Math.max(1, nodes.length - 1) * Math.PI * 2 - Math.PI / 2; const w = node.width ?? (index === 0 ? 220 : 180); const h = node.height ?? cardHeight(node, w, index === 0 ? 110 : 86); const px = node.x ?? (index === 0 ? centerX - w / 2 : centerX + Math.cos(angle) * radiusX - w / 2); const py = node.y ?? (index === 0 ? centerY - h / 2 : centerY + Math.sin(angle) * radiusY - h / 2); operations.push(...cardOperations(prefix, { ...node, role: index === 0 ? "primary" : node.role }, px, py, w, h, true)); nodeIds.set(node.id, idsFor(prefix, node).shape); });
+  nodes.slice(1).forEach((node, index) => { const fromId = nodeIds.get(node.parentId ?? root.id); const toId = nodeIds.get(node.id); if (fromId && toId) operations.push({ type: "connect", id: `${prefix}-branch-${index}`, fromId, toId, color: palette.muted, strokeWidth: 2, route: "curved" }); });
+  for (const [index, edge] of (input.edges ?? []).entries()) { const fromId = nodeIds.get(edge.fromId); const toId = nodeIds.get(edge.toId); if (fromId && toId) operations.push({ type: "connect", id: `${prefix}-edge-${index}`, fromId, toId, label: edge.label, color: palette.muted, strokeWidth: 2, route: "curved" }); }
   return operations;
 }
 
@@ -96,7 +133,7 @@ function uiWireframe(input: VisualCompositionInput, prefix: string): CanvasOpera
   ]; const children: string[] = [];
   const nodes = input.nodes ?? []; nodes.forEach((node, index) => {
     const role = node.role ?? "card"; const defaults: Record<string, { w: number; h: number }> = { header: { w: width - 48, h: 76 }, navbar: { w: width - 48, h: 68 }, sidebar: { w: 220, h: height - 140 }, section: { w: 520, h: 260 }, card: { w: 250, h: 150 }, button: { w: 160, h: 52 }, input: { w: 260, h: 56 }, checkbox: { w: 180, h: 48 }, radio: { w: 180, h: 48 }, switch: { w: 92, h: 48 }, select: { w: 240, h: 56 }, tabs: { w: 340, h: 52 }, list: { w: 320, h: 220 }, modal: { w: 440, h: 300 }, badge: { w: 110, h: 42 }, avatar: { w: 72, h: 72 }, divider: { w: 360, h: 12 }, icon: { w: 48, h: 48 }, text: { w: 300, h: 70 }, frame: { w: 420, h: 280 } }; const size = defaults[role] ?? defaults.card;
-    const w = node.width ?? size.w; const h = node.height ?? size.h; const px = node.x ?? x + 30 + (index % 3) * 290; const py = node.y ?? y + 110 + Math.floor(index / 3) * 190;
+    const w = node.width ?? size.w; const h = node.height ?? (role === "text" ? size.h : Math.max(size.h, cardHeight(node, w, 0))); const px = node.x ?? x + 30 + (index % 3) * 290; const py = node.y ?? y + 110 + Math.floor(index / 3) * 190;
     if (role === "text") { const id = idsFor(prefix, node).text; operations.push({ type: "create_text", id, x: px, y: py, width: w, fontSize: 22, color: theme.text, text: node.detail ? `${node.label}\n${node.detail}` : node.label, semanticRole: role, parentId: artboardId }); children.push(id); }
     else { const card = cardOperations(prefix, node, px, py, w, h, role === "input" || role === "avatar"); for (const operation of card) { if (operation.type === "create_shape" || operation.type === "create_text") operation.parentId = artboardId; if (operation.type === "create_shape") { operation.semanticRole = role; operation.fillColor = role === "button" ? theme.accent : theme.surface; operation.fillOpacity = 1; } if (operation.type === "create_text") operation.color = role === "button" && theme.accent === "#080808" ? "#ffffff" : theme.text; } operations.push(...card); children.push(idsFor(prefix, node).shape, idsFor(prefix, node).text); }
   });
@@ -105,13 +142,17 @@ function uiWireframe(input: VisualCompositionInput, prefix: string): CanvasOpera
 
 function researchReport(input: VisualCompositionInput, prefix: string): CanvasOperation[] {
   const x = input.x ?? -500; const y = input.y ?? -340; const width = input.width ?? 1000; const sections = input.sections ?? []; const columns = sections.length > 3 ? 2 : 1; const cardWidth = (width - (columns - 1) * 34) / columns; const operations = titleOperations(prefix, input.title ?? "Research brief", x, y, width);
-  sections.forEach((section, index) => { const column = index % columns; const row = Math.floor(index / columns); const node: VisualNodeInput = { id: `section-${index}`, label: section.heading, detail: section.body, role: index === 0 ? "primary" : "card" }; operations.push(...cardOperations(prefix, node, x + column * (cardWidth + 34), y + 90 + row * 210, cardWidth, 174)); });
+  const nodes: VisualNodeInput[] = sections.map((section, index) => ({ id: `section-${index}`, label: section.heading, detail: section.body, role: index === 0 ? "primary" : "card" }));
+  const heights = gridRowHeights(nodes, columns, () => cardWidth, 140);
+  nodes.forEach((node, index) => { const column = index % columns; const row = Math.floor(index / columns); operations.push(...cardOperations(prefix, node, x + column * (cardWidth + 34), y + 90 + rowOffset(heights, row, 36), cardWidth, heights[row])); });
   return operations;
 }
 
 function mathSteps(input: VisualCompositionInput, prefix: string): CanvasOperation[] {
-  const x = input.x ?? -380; const y = input.y ?? -300; const width = input.width ?? 760; const operations = titleOperations(prefix, input.title ?? "Rechenweg", x, y, width); const steps = input.steps ?? [];
-  steps.forEach((step, index) => { const node: VisualNodeInput = { id: `step-${index}`, label: `${index + 1}. ${step.expression}`, detail: step.explanation, role: index === steps.length - 1 ? "primary" : "card" }; operations.push(...cardOperations(prefix, node, x, y + 82 + index * 142, width, 112)); if (index > 0) operations.push({ type: "connect", id: `${prefix}-step-edge-${index}`, fromId: `${prefix}-step-${index - 1}`, toId: `${prefix}-step-${index}`, color: "#404040", strokeWidth: 2 }); });
+  const x = input.x ?? -380; const y = input.y ?? -300; const width = input.width ?? 760; const operations = titleOperations(prefix, input.title ?? "Calculation steps", x, y, width); const steps = input.steps ?? [];
+  const stepNodes: VisualNodeInput[] = steps.map((step, index) => ({ id: `step-${index}`, label: `${index + 1}. ${step.expression}`, detail: step.explanation, role: index === steps.length - 1 ? "primary" : "card" }));
+  let cursor = y + 82;
+  stepNodes.forEach((node, index) => { const height = cardHeight(node, width, 96); operations.push(...cardOperations(prefix, node, x, cursor, width, height)); cursor += height + spacing.lg; if (index > 0) operations.push({ type: "connect", id: `${prefix}-step-edge-${index}`, fromId: `${prefix}-step-${index - 1}`, toId: `${prefix}-step-${index}`, color: palette.muted, strokeWidth: 2 }); });
   return operations;
 }
 
@@ -131,26 +172,42 @@ function plot(input: VisualCompositionInput, prefix: string): CanvasOperation[] 
 
 function studyNote(input: VisualCompositionInput, prefix: string): CanvasOperation[] {
   const x = input.x ?? -470; const y = input.y ?? -320; const width = input.width ?? 940; const sections = input.sections ?? [];
-  const operations: CanvasOperation[] = [{ type: "create_frame", id: `${prefix}-page`, x, y, width, height: input.height ?? Math.max(620, 150 + sections.length * 145), title: input.title ?? "Study notes", renderStyle: "sketch" }];
-  sections.forEach((section, index) => { const py = y + 88 + index * 142; operations.push({ type: "create_text", id: `${prefix}-heading-${index}`, x: x + 28, y: py, width: width - 56, text: section.heading, fontSize: 27, fontWeight: 700, blockStyle: "heading-2", highlightColor: index === 0 ? "#ffd84d" : undefined, renderStyle: "sketch" }, { type: "create_text", id: `${prefix}-body-${index}`, x: x + 42, y: py + 45, width: width - 84, text: section.body, fontSize: 21, blockStyle: "bullet", renderStyle: "sketch" }); });
+  const blocks = sections.map((section) => ({
+    heading: measureTextBlock({ text: section.heading, width: width - 56, fontSize: typeScale.heading.fontSize, fontWeight: typeScale.heading.fontWeight, blockStyle: "heading-2", fontFamily: AGENT_FONT }).height,
+    body: measureTextBlock({ text: section.body, width: width - 84, fontSize: typeScale.subheading.fontSize, blockStyle: "bullet", fontFamily: AGENT_FONT }).height
+  }));
+  const pageHeight = input.height ?? Math.max(320, 120 + blocks.reduce((total, block) => total + block.heading + block.body + spacing.md + spacing.lg, 0));
+  const operations: CanvasOperation[] = [{ type: "create_frame", id: `${prefix}-page`, x, y, width, height: pageHeight, title: input.title ?? "Study notes", renderStyle: "sketch" }];
+  let noteCursor = y + 88;
+  sections.forEach((section, index) => {
+    const block = blocks[index];
+    operations.push({ type: "create_text", id: `${prefix}-heading-${index}`, x: x + 28, y: noteCursor, width: width - 56, text: section.heading, fontSize: typeScale.heading.fontSize, fontWeight: typeScale.heading.fontWeight, blockStyle: "heading-2", highlightColor: index === 0 ? palette.highlight : undefined, renderStyle: "sketch" }, { type: "create_text", id: `${prefix}-body-${index}`, x: x + 42, y: noteCursor + block.heading + spacing.xs, width: width - 84, text: section.body, fontSize: typeScale.subheading.fontSize, blockStyle: "bullet", renderStyle: "sketch" });
+    noteCursor += block.heading + block.body + spacing.md + spacing.lg;
+  });
   return operations;
 }
 
 function timeline(input: VisualCompositionInput, prefix: string): CanvasOperation[] {
   const nodes = input.nodes ?? []; const x = input.x ?? -480; const y = input.y ?? -100; const width = input.width ?? 960; const gap = width / Math.max(1, nodes.length - 1); const operations = titleOperations(prefix, input.title ?? "Timeline", x, y - 130, width);
   if (nodes.length > 1) operations.push({ type: "create_arrow", id: `${prefix}-axis`, from: { x, y }, to: { x: x + width, y }, color: "#404040", strokeWidth: 3 });
-  nodes.forEach((node, index) => { const px = x + gap * index; operations.push({ type: "create_shape", id: `${prefix}-dot-${index}`, kind: "ellipse", x: px - 8, y: y - 8, width: 16, height: 16, color: "#080808", filled: true, fillColor: "#080808", fillOpacity: 1 }, { type: "create_note", id: `${prefix}-event-${index}`, x: px - 105, y: y + (index % 2 ? 44 : -180), width: 210, height: 112, text: node.detail ? `${node.label}\n${node.detail}` : node.label, fillColor: "#ffffff", renderStyle: "sketch" }); }); return operations;
+  nodes.forEach((node, index) => { const px = x + gap * index; operations.push({ type: "create_shape", id: `${prefix}-dot-${index}`, kind: "ellipse", x: px - 8, y: y - 8, width: 16, height: 16, color: "#080808", filled: true, fillColor: "#080808", fillOpacity: 1 }, { type: "create_note", id: `${prefix}-event-${index}`, x: px - 105, y: y + (index % 2 ? 44 : -180), width: 210, height: noteHeight(node.detail ? `${node.label}\n${node.detail}` : node.label, 210, undefined, 112), text: node.detail ? `${node.label}\n${node.detail}` : node.label, fillColor: palette.surface, renderStyle: "sketch" }); }); return operations;
 }
 
 function comparison(input: VisualCompositionInput, prefix: string): CanvasOperation[] {
   const sections = input.sections ?? []; const x = input.x ?? -460; const y = input.y ?? -300; const width = input.width ?? 920; const columns = Math.max(2, Math.min(4, sections.length || 2)); const operations = titleOperations(prefix, input.title ?? "Comparison", x, y, width); const columnWidth = (width - 24 * (columns - 1)) / columns;
-  sections.forEach((section, index) => operations.push({ type: "create_note", id: `${prefix}-column-${index}`, x: x + index * (columnWidth + 24), y: y + 72, width: columnWidth, height: input.height ?? 460, text: `${section.heading}\n${section.body}`, blockStyle: "bullet", fillColor: index % 2 ? "#f3f3f3" : "#ffffff", renderStyle: "sketch" })); return operations;
+  const columnHeight = input.height ?? sections.reduce((tallest, section) => Math.max(tallest, noteHeight(`${section.heading}\n${section.body}`, columnWidth, "bullet", 200)), 200);
+  sections.forEach((section, index) => operations.push({ type: "create_note", id: `${prefix}-column-${index}`, x: x + index * (columnWidth + 24), y: y + 72, width: columnWidth, height: columnHeight, text: `${section.heading}\n${section.body}`, blockStyle: "bullet", fillColor: index % 2 ? palette.surfaceAlt : palette.surface, renderStyle: "sketch" })); return operations;
 }
 
 function visualExplainer(input: VisualCompositionInput, prefix: string): CanvasOperation[] {
-  const nodes = input.nodes ?? []; const x = input.x ?? -450; const y = input.y ?? -300; const width = input.width ?? 900; const operations: CanvasOperation[] = [{ type: "create_frame", id: `${prefix}-frame`, x, y, width, height: input.height ?? 620, title: input.title ?? "Visual explanation", renderStyle: "sketch" }];
+  const nodes = input.nodes ?? []; const x = input.x ?? -450; const y = input.y ?? -300; const width = input.width ?? 900;
   const columns = Math.min(3, Math.max(1, Math.ceil(Math.sqrt(nodes.length || 1)))); const cardWidth = (width - 70 - (columns - 1) * 28) / columns;
-  nodes.forEach((node, index) => { const px = x + 28 + (index % columns) * (cardWidth + 28); const py = y + 90 + Math.floor(index / columns) * 190; operations.push({ type: "create_note", id: `${prefix}-idea-${index}`, x: px, y: py, width: cardWidth, height: 145, text: node.detail ? `${node.label}\n${node.detail}` : node.label, fillColor: index === 0 ? "#fff4b8" : "#ffffff", renderStyle: "sketch" }); });
+  const ideaText = (node: VisualNodeInput): string => node.detail ? `${node.label}\n${node.detail}` : node.label;
+  const heights: number[] = [];
+  nodes.forEach((node, index) => { const row = Math.floor(index / columns); heights[row] = Math.max(heights[row] ?? 0, noteHeight(ideaText(node), cardWidth, undefined, 120)); });
+  const contentHeight = heights.length ? rowOffset(heights, heights.length, spacing.lg) + 90 + spacing.md : 240;
+  const operations: CanvasOperation[] = [{ type: "create_frame", id: `${prefix}-frame`, x, y, width, height: input.height ?? Math.max(320, contentHeight), title: input.title ?? "Visual explanation", renderStyle: "sketch" }];
+  nodes.forEach((node, index) => { const row = Math.floor(index / columns); const px = x + 28 + (index % columns) * (cardWidth + 28); const py = y + 90 + rowOffset(heights, row, spacing.lg); operations.push({ type: "create_note", id: `${prefix}-idea-${index}`, x: px, y: py, width: cardWidth, height: heights[row], text: ideaText(node), fillColor: index === 0 ? palette.note : palette.surface, renderStyle: "sketch" }); });
   return operations;
 }
 
@@ -170,7 +227,25 @@ export function composeVisual(input: VisualCompositionInput): CanvasOperation[] 
     return flowchart({ ...input, kind: "flowchart", nodes }, prefix);
   }
   if (input.kind === "visual_explainer" || input.kind === "guided_explainer") {
-    const operations = visualExplainer(input, prefix); const nodes = input.nodes ?? []; const resolve = (id: string): string[] => { const index = nodes.findIndex((node) => node.id === id); return index < 0 ? [id] : [`${prefix}-idea-${index}-card`, `${prefix}-idea-${index}-text`]; }; const steps = input.presentationSteps?.length ? input.presentationSteps.map((step, index) => ({ id: `${prefix}-step-${index}`, title: step.title, body: step.body, focusElementIds: step.focusIds.flatMap(resolve), revealElementIds: (step.revealIds ?? step.focusIds).flatMap(resolve) })) : nodes.map((node, index) => ({ id: `${prefix}-step-${index}`, title: node.label, body: node.detail, focusElementIds: resolve(node.id), revealElementIds: resolve(node.id) })); if (steps.length) operations.push({ type: "set_explanation_sequence", sequence: { id: `${prefix}-sequence`, title: input.title ?? "Geführte Erklärung", steps } }); return operations;
+    const operations = visualExplainer(input, prefix); const nodes = input.nodes ?? [];
+    const resolve = (id: string): string[] => { const index = nodes.findIndex((node) => node.id === id); return index < 0 ? [id] : [`${prefix}-idea-${index}-card`, `${prefix}-idea-${index}-text`]; };
+    const placed = new Map<string, { minX: number; minY: number; maxX: number; maxY: number }>();
+    for (const operation of operations) if (operation.type === "create_note" && operation.id) {
+      const box = { minX: operation.x, minY: operation.y, maxX: operation.x + (operation.width ?? 260), maxY: operation.y + (operation.height ?? 145) };
+      placed.set(`${operation.id}-card`, box); placed.set(`${operation.id}-text`, box);
+    }
+    const cameraFor = (elementIds: string[]): { minX: number; minY: number; maxX: number; maxY: number } | undefined => {
+      const boxes = elementIds.map((id) => placed.get(id)).filter((box): box is NonNullable<typeof box> => Boolean(box));
+      if (!boxes.length) return undefined;
+      const margin = spacing.xl;
+      return { minX: Math.min(...boxes.map((box) => box.minX)) - margin, minY: Math.min(...boxes.map((box) => box.minY)) - margin, maxX: Math.max(...boxes.map((box) => box.maxX)) + margin, maxY: Math.max(...boxes.map((box) => box.maxY)) + margin };
+    };
+    const steps = (input.presentationSteps?.length
+      ? input.presentationSteps.map((step, index) => ({ id: `${prefix}-step-${index}`, title: step.title, body: step.body, focusElementIds: step.focusIds.flatMap(resolve), revealElementIds: (step.revealIds ?? step.focusIds).flatMap(resolve) }))
+      : nodes.map((node, index) => ({ id: `${prefix}-step-${index}`, title: node.label, body: node.detail, focusElementIds: resolve(node.id), revealElementIds: resolve(node.id) }))
+    ).map((step) => ({ ...step, cameraBounds: cameraFor(step.focusElementIds) }));
+    if (steps.length) operations.push({ type: "set_explanation_sequence", sequence: { id: `${prefix}-sequence`, title: input.title ?? "Guided explanation", steps } });
+    return operations;
   }
   return plot(input, prefix);
 }

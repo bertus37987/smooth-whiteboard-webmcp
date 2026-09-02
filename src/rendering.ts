@@ -26,6 +26,111 @@ export function drawInkStroke(context: CanvasRenderingContext2D, stroke: InkStro
   context.restore();
 }
 
+/* ---------------------------------------------------------------- *
+ * Hand-drawn geometry. Deterministic per element id, so the same shape *
+ * looks identical on every frame, in PNG and in SVG.                   *
+ * ---------------------------------------------------------------- */
+
+function hashString(value: string): number {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) { hash ^= value.charCodeAt(index); hash = Math.imul(hash, 16777619); }
+  return hash >>> 0;
+}
+
+function seededRandom(seed: number): () => number {
+  let state = (seed || 1) >>> 0;
+  return () => { state = (Math.imul(state, 1664525) + 1013904223) >>> 0; return state / 4294967296; };
+}
+
+function outlineBox(points: Array<{ x: number; y: number }>): { minX: number; minY: number; maxX: number; maxY: number } {
+  return points.reduce((box, point) => ({ minX: Math.min(box.minX, point.x), minY: Math.min(box.minY, point.y), maxX: Math.max(box.maxX, point.x), maxY: Math.max(box.maxY, point.y) }), { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity });
+}
+
+/** The shape as an explicit outline: rounded rectangles and ellipses become point paths. */
+export function shapeOutline(shape: ShapeElement, cornerSamples = 6): Array<{ x: number; y: number }> {
+  if (shape.kind === "ellipse") {
+    const box = outlineBox(shape.points); const cx = (box.minX + box.maxX) / 2; const cy = (box.minY + box.maxY) / 2; const rx = (box.maxX - box.minX) / 2; const ry = (box.maxY - box.minY) / 2;
+    return Array.from({ length: 56 }, (_, index) => { const angle = index / 56 * Math.PI * 2; return { x: cx + Math.cos(angle) * rx, y: cy + Math.sin(angle) * ry }; });
+  }
+  if (shape.kind === "rectangle" && shape.points.length === 2) {
+    const box = outlineBox(shape.points); const width = box.maxX - box.minX; const height = box.maxY - box.minY;
+    const corner = Math.max(0, Math.min(shape.radius ?? 0, width / 2, height / 2));
+    const corners: Array<[number, number, number]> = [[box.maxX - corner, box.minY + corner, -Math.PI / 2], [box.maxX - corner, box.maxY - corner, 0], [box.minX + corner, box.maxY - corner, Math.PI / 2], [box.minX + corner, box.minY + corner, Math.PI]];
+    const outline: Array<{ x: number; y: number }> = [];
+    for (const [cx, cy, start] of corners) {
+      if (corner <= 0.5) { outline.push({ x: cx, y: cy }); continue; }
+      for (let sample = 0; sample <= cornerSamples; sample += 1) { const angle = start + sample / cornerSamples * (Math.PI / 2); outline.push({ x: cx + Math.cos(angle) * corner, y: cy + Math.sin(angle) * corner }); }
+    }
+    return outline;
+  }
+  return shape.points.map((point) => ({ x: point.x, y: point.y }));
+}
+
+const OUTLINE_SPACING = 26;
+
+function resampleOutline(points: Array<{ x: number; y: number }>, closed: boolean, spacing = OUTLINE_SPACING): Array<{ x: number; y: number }> {
+  if (points.length < 2) return points;
+  const path = closed ? [...points, points[0]] : points;
+  const output: Array<{ x: number; y: number }> = [path[0]];
+  for (let index = 1; index < path.length; index += 1) {
+    const from = path[index - 1]; const to = path[index];
+    const distance = Math.hypot(to.x - from.x, to.y - from.y);
+    const steps = Math.max(1, Math.round(distance / spacing));
+    for (let step = 1; step <= steps; step += 1) output.push({ x: from.x + (to.x - from.x) * step / steps, y: from.y + (to.y - from.y) * step / steps });
+  }
+  if (closed) output.pop();
+  return output;
+}
+
+export function isSketchShape(shape: ShapeElement): boolean {
+  return shape.renderStyle === "sketch" && shape.kind !== "arrow" && shape.kind !== "line";
+}
+
+export function sketchShapeClosed(shape: ShapeElement): boolean {
+  return shape.kind === "rectangle" || shape.kind === "ellipse" || shape.closed !== false;
+}
+
+/**
+ * One hand-drawn pass over a shape: a slow wobble along the outline rather than per-point noise,
+ * seeded from the element id so it never shimmers between frames or export formats.
+ */
+export function sketchOutline(shape: ShapeElement, pass = 0): Array<{ x: number; y: number }> {
+  const outline = resampleOutline(shapeOutline(shape), sketchShapeClosed(shape));
+  if (outline.length < 2) return outline;
+  const random = seededRandom(hashString(`${shape.id}:${pass}`));
+  const amount = Math.min(4, Math.max(1.8, shape.size * .8));
+  const phaseX = random() * Math.PI * 2; const phaseY = random() * Math.PI * 2;
+  // One wave roughly every 110 world units, so a single card edge visibly bends instead of tilting.
+  const frequency = Math.max(2, outline.length * OUTLINE_SPACING / 110) * (.85 + random() * .3);
+  const driftX = (random() - .5) * amount; const driftY = (random() - .5) * amount;
+  return outline.map((point, index) => {
+    const t = index / outline.length * Math.PI * 2 * frequency;
+    return { x: point.x + Math.sin(t + phaseX) * amount + driftX, y: point.y + Math.cos(t * 1.13 + phaseY) * amount + driftY };
+  });
+}
+
+function tracePath(context: CanvasRenderingContext2D, points: Array<{ x: number; y: number }>, closed: boolean): void {
+  context.beginPath(); context.moveTo(points[0].x, points[0].y);
+  for (const point of points.slice(1)) context.lineTo(point.x, point.y);
+  if (closed) context.closePath();
+}
+
+function drawSketchShape(context: CanvasRenderingContext2D, shape: ShapeElement): void {
+  const closed = sketchShapeClosed(shape); const first = sketchOutline(shape, 0); if (first.length < 2) return;
+  context.save();
+  context.strokeStyle = visibleInkColor(shape.color); context.lineWidth = shape.size; context.lineCap = "round"; context.lineJoin = "round";
+  if (shape.lineStyle === "dashed") context.setLineDash([shape.size * 3.5, shape.size * 2.5]);
+  else if (shape.lineStyle === "dotted") context.setLineDash([0.01, shape.size * 2.8]);
+  if (closed && shape.fillColor && (shape.fillOpacity ?? 0) > 0) {
+    tracePath(context, first, true); context.save(); context.globalAlpha *= shape.fillOpacity ?? 0; context.fillStyle = shape.fillColor; context.fill(); context.restore();
+  }
+  tracePath(context, first, closed); context.stroke();
+  const second = sketchOutline(shape, 1);
+  context.globalAlpha *= .5; context.lineWidth = Math.max(.6, shape.size * .75);
+  tracePath(context, second, closed); context.stroke();
+  context.restore();
+}
+
 function drawArrowHead(context: CanvasRenderingContext2D, start: { x: number; y: number }, end: { x: number; y: number }, size: number): void {
   const angle = Math.atan2(end.y - start.y, end.x - start.x); const length = Math.max(18, size * 5);
   context.moveTo(end.x, end.y); context.lineTo(end.x - Math.cos(angle - Math.PI / 6) * length, end.y - Math.sin(angle - Math.PI / 6) * length);
@@ -34,10 +139,7 @@ function drawArrowHead(context: CanvasRenderingContext2D, start: { x: number; y:
 
 export function drawShape(context: CanvasRenderingContext2D, shape: ShapeElement): void {
   if (shape.points.length === 0) return;
-  if (shape.renderStyle === "sketch") {
-    context.save(); context.globalAlpha *= 0.3; context.translate(Math.max(0.8, shape.size * 0.35), -Math.max(0.6, shape.size * 0.22));
-    drawShape(context, { ...shape, renderStyle: "clean", size: Math.max(0.7, shape.size * 0.82) }); context.restore();
-  }
+  if (isSketchShape(shape)) { drawSketchShape(context, shape); return; }
   context.save(); context.strokeStyle = visibleInkColor(shape.color); context.lineWidth = shape.size;
   context.lineCap = shape.kind === "ellipse" || shape.kind === "line" || shape.kind === "arrow" ? "round" : "butt";
   context.lineJoin = shape.kind === "ellipse" ? "round" : "miter";
@@ -81,32 +183,49 @@ export function drawHighlight(context: CanvasRenderingContext2D, highlight: High
   context.stroke(); context.restore();
 }
 
-export function drawText(context: CanvasRenderingContext2D, text: TextElement, fontFamily?: string): void {
-  const families = {
-    sans: "Inter, ui-sans-serif, system-ui, sans-serif",
-    serif: "Georgia, Cambria, serif",
-    mono: '"SFMono-Regular", Consolas, "Liberation Mono", monospace',
-    handwriting: '"Segoe Print", "Bradley Hand", "Comic Sans MS", "Chalkboard SE", cursive, sans-serif'
-  } as const;
-  const family = fontFamily ?? families[text.fontFamily ?? "sans"];
+export const textFontFamilies = {
+  sans: "Inter, ui-sans-serif, system-ui, sans-serif",
+  serif: "Georgia, Cambria, serif",
+  mono: '"SFMono-Regular", Consolas, "Liberation Mono", monospace',
+  handwriting: '"Segoe Print", "Bradley Hand", "Comic Sans MS", "Chalkboard SE", cursive, sans-serif'
+} as const;
+export const TEXT_LINE_HEIGHT = 1.22;
+
+export type TextMetricsInput = Pick<TextElement, "fontSize" | "fontFamily" | "fontWeight" | "fontStyle" | "blockStyle">;
+
+export function textFontString(text: TextMetricsInput, family?: string): string {
   const weight = text.fontWeight ?? (text.blockStyle?.startsWith("heading") ? 700 : 400);
-  if (text.renderStyle === "sketch") { context.save(); context.globalAlpha *= .18; context.translate(.9, -.55); drawText(context, { ...text, renderStyle: "clean" }, family); context.restore(); }
-  context.save(); context.fillStyle = visibleInkColor(text.color); context.font = `${text.fontStyle ?? "normal"} ${weight} ${text.fontSize}px ${family}`;
-  context.textBaseline = "alphabetic";
-  context.textAlign = text.textAlign ?? "left";
+  return `${text.fontStyle ?? "normal"} ${weight} ${text.fontSize}px ${family ?? textFontFamilies[text.fontFamily ?? "sans"]}`;
+}
+
+/**
+ * The one wrapping implementation. The renderer measures with the canvas, the layout code measures
+ * with an offscreen canvas of the same font, so predicted and painted line counts cannot drift apart.
+ */
+export function wrapTextLines(text: string, width: number, blockStyle: TextElement["blockStyle"] | undefined, measure: (line: string) => number): string[] {
   const lines: string[] = [];
-  const prefix = text.blockStyle === "bullet" ? "• " : text.blockStyle === "numbered" ? "1. " : text.blockStyle === "check" ? "☐ " : text.blockStyle === "quote" ? "› " : "";
-  const paragraphs = text.text.split("\n").map((paragraph, index) => prefix ? `${text.blockStyle === "numbered" ? `${index + 1}. ` : prefix}${paragraph}`.replace(/^1\. \d+\. /, `${index + 1}. `) : paragraph);
+  const prefix = blockStyle === "bullet" ? "• " : blockStyle === "numbered" ? "1. " : blockStyle === "check" ? "☐ " : blockStyle === "quote" ? "› " : "";
+  const paragraphs = text.split("\n").map((paragraph, index) => prefix ? `${blockStyle === "numbered" ? `${index + 1}. ` : prefix}${paragraph}`.replace(/^1\. \d+\. /, `${index + 1}. `) : paragraph);
   for (const paragraph of paragraphs) {
     const words = paragraph.split(/\s+/).filter(Boolean); let line = "";
     for (const word of words) {
       const candidate = line ? `${line} ${word}` : word;
-      if (line && context.measureText(candidate).width > text.width) { lines.push(line); line = word; }
+      if (line && measure(candidate) > width) { lines.push(line); line = word; }
       else line = candidate;
     }
     lines.push(line);
   }
-  const lineHeight = text.fontSize * 1.22;
+  return lines;
+}
+
+export function drawText(context: CanvasRenderingContext2D, text: TextElement, fontFamily?: string): void {
+  const family = fontFamily ?? textFontFamilies[text.fontFamily ?? "sans"];
+  if (text.renderStyle === "sketch") { context.save(); context.globalAlpha *= .18; context.translate(.9, -.55); drawText(context, { ...text, renderStyle: "clean" }, family); context.restore(); }
+  context.save(); context.fillStyle = visibleInkColor(text.color); context.font = textFontString(text, family);
+  context.textBaseline = "alphabetic";
+  context.textAlign = text.textAlign ?? "left";
+  const lines = wrapTextLines(text.text, text.width, text.blockStyle, (line) => context.measureText(line).width);
+  const lineHeight = text.fontSize * TEXT_LINE_HEIGHT;
   const anchorX = text.textAlign === "center" ? text.x + text.width / 2 : text.textAlign === "right" ? text.x + text.width : text.x;
   if (text.highlightColor) {
     context.save(); context.globalAlpha = 0.24; context.fillStyle = text.highlightColor;

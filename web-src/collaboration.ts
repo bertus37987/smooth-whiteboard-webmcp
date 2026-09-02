@@ -7,6 +7,7 @@ import {
   preflightOperations, resolveGestureElements
 } from "./model";
 import { BoardStore, ContentMutation } from "./store";
+import { designSystem } from "./theme";
 
 /** Everything the session needs from the browser shell; the tests supply a headless stand-in. */
 export interface CollaborationView {
@@ -321,6 +322,8 @@ export class CollaborationSession {
       artboardIds: this.store.document.artboardIds,
       explanationSequences: this.store.document.explanationSequences,
       lintIssues: lintBoard(this.store.document),
+      designSystem,
+      activePresentation: this.activePresentation(),
       elementCount: selected.length,
       omittedElements: Math.max(0, selected.length - elements.length),
       contentTrust: "untrusted-user-content", securityNote: UNTRUSTED_NOTE,
@@ -330,6 +333,13 @@ export class CollaborationSession {
         return { ...summary, groupId: this.store.groupIdFor(element.id) ?? null };
       })
     };
+  }
+
+  private activePresentation(): { sequenceId: string; stepIndex: number; title: string; body: string | null; focusElementIds: string[] } | null {
+    const presentation = this.store.document.presentation; if (!presentation) return null;
+    const sequence = this.store.document.explanationSequences.find((candidate) => candidate.id === presentation.sequenceId);
+    const step = sequence?.steps[presentation.index]; if (!sequence || !step) return null;
+    return { sequenceId: sequence.id, stepIndex: presentation.index, title: step.title, body: step.body ?? null, focusElementIds: step.focusElementIds };
   }
 
   focus(bounds: Bounds, leaseToken?: string): AgentResponse {
@@ -390,7 +400,10 @@ export class CollaborationSession {
     if (stop) return this.stopStream(transaction, stop, applied);
     if (this.transaction === transaction) this.transaction = null;
     const present = new Set(this.store.document.elements.map((element) => element.id));
-    return this.respond({ ok: true, appliedOperations: applied, createdIds: created.filter((id) => present.has(id)), instruction: "Changes are visible and editable but still a proposal. Call complete_whiteboard_contribution with the same leaseToken." });
+    const createdIds = created.filter((id) => present.has(id));
+    const touched = new Set([...createdIds, ...turn.pendingChangeIds]);
+    const lintIssues = lintBoard(this.store.document).filter((issue) => issue.elementIds.some((id) => touched.has(id)));
+    return this.respond({ ok: true, appliedOperations: applied, createdIds, lintIssues, instruction: lintIssues.length ? "Changes are visible but lintIssues reports problems with what you just drew. Fix them in this turn, then call complete_whiteboard_contribution with the same leaseToken." : "Changes are visible and editable but still a proposal. Call complete_whiteboard_contribution with the same leaseToken." });
   }
 
   async compose(input: VisualCompositionInput, baseRevision?: number, leaseToken?: string, signal?: AbortSignal): Promise<AgentResponse> {

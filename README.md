@@ -23,6 +23,10 @@ This project turns the existing Smooth Handwriting vector canvas into a standalo
 - Separate red glowing agent markers with a hover explanation until the contribution is accepted or undone
 - Agent typography (sans, serif, mono and handwriting roles), text alignment/weight/style, text highlighting, filled shapes, rounded corners, line styles and one- or two-headed arrows
 - Structured editable visuals: study notes, explainers, timelines, comparisons, hierarchies, UI wireframes, flowcharts, mindmaps, research briefs, calculations and plots
+- Every generated card, note and page is measured against the real font, so agent layouts do not overflow their boxes
+- Hand-drawn sketch rendering with a deterministic wobble, identical on screen and in PNG/SVG/PDF export
+- Routed connectors (straight, orthogonal, curved), flowchart diamonds and triangles, annotation callouts with leader lines, smoothed free-hand paths and fourteen icons
+- Guided explanations show the agent's own step text, remember which step is open across reloads, and can be driven by the agent
 - Optional English handwriting assistance using the browser/OS recognizer. It runs locally after pen-up, never replaces visible ink and can be disabled; unsupported browsers retain only gentle geometric smoothing
 - Agent output appears as one neutral dashed proposal batch with an atomic Accept / Reject decision; rejecting restores the complete pre-agent state
 - Rounded pen-first black, white and grey interface with cache-safe high-contrast icons, contextual selection actions and no logo or filler content
@@ -39,6 +43,15 @@ The app registers eight tools through `document.modelContext`:
 6. `apply_whiteboard_changes` creates and edits text, notes, agent-only tables, artboards, icons, highlights, filled shapes, arrows, custom paths, step sequences and temporary red agent comments.
 7. `create_structured_visual` compiles higher-level learning, diagram, data, UI-mockup and guided-explanation layouts into ordinary editable objects.
 8. `complete_whiteboard_contribution` ends the turn and exposes Accept / Reject to the human.
+
+`apply_whiteboard_changes` covers creation (text, notes, callouts, tables, frames, artboards, highlights,
+shapes including diamonds and triangles, arrows, routed connectors, icons, smoothed paths, agent comments),
+editing (move, resize, rewrite, restyle, lock, reorder, group, re-parent, duplicate, delete), layout
+(`align`, `distribute`, `auto_layout`, `fit_to_content`) and teaching (`set_explanation_sequence`,
+`present_step`). Its answer carries `lintIssues` for the elements just touched, so the agent can fix an
+overflow, an overlap, an unlabelled control or a contrast problem inside the same turn.
+`inspect_whiteboard` additionally returns `designSystem` (the shared palette, spacing and type scale) and
+`activePresentation` (the guided-explanation step the human is looking at).
 
 The board state—not an agent's previous output—is always the source of truth. Agent-created items are normal canvas items, so the human can move, resize, rewrite or remove them before the next inspection.
 
@@ -94,7 +107,8 @@ The earlier Obsidian plugin can still be built with `npm run build`. It keeps ve
 ## Architecture
 
 - `src/document.ts`, `src/strokes.ts`, `src/shapes.ts`, `src/rendering.ts`: reused canvas core
-- `web-src/model.ts`: infinite-board document and canvas operations
+- `web-src/model.ts`: infinite-board document, canvas operations, connector routing and the design linter
+- `web-src/measure.ts`, `web-src/theme.ts`: real text measurement and the shared palette/spacing scale
 - `web-src/compositions.ts`: high-level editable visual composers
 - `web-src/store.ts`: revisioned state, persistence, history and agent rollback
 - `web-src/renderer.ts`: infinite-canvas renderer, camera, selection and lasso

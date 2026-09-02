@@ -54,6 +54,7 @@ export class WhiteboardApp {
   private readonly promptDock = byId<HTMLElement>("prompt-dock");
   private readonly explanationControls = byId<HTMLElement>("explanation-controls");
   private activeExplanation: { sequence: ExplanationSequence; index: number } | null = null;
+  private presentationKey = "";
   private readonly abort = new AbortController();
   private readonly handwriting = new EnglishHandwritingAssist();
   private handwritingTimer = 0;
@@ -369,9 +370,9 @@ export class WhiteboardApp {
     shell.style.width = `${editorWidth}px`; shell.style.height = `${editorHeight}px`; shell.style.left = `${Math.max(10, Math.min(window.innerWidth - editorWidth - 10, rect.left + screen.x))}px`; shell.style.top = `${Math.max(10, Math.min(window.innerHeight - editorHeight - 10, rect.top + screen.y))}px`; updatePreview(); input.focus(); input.select();
     let committed = false; const commit = (): void => { if (committed || !shell.isConnected) return; committed = true; const text = input.value.trim(); const editorRect = shell.getBoundingClientRect(); const contentHeight = Math.max(40, (editorRect.height - controls.getBoundingClientRect().height) / this.renderer.camera.zoom); shell.remove(); if (!text || !this.guardHumanMutation()) return; this.store.checkpoint();
       const width = Math.max(160, editorRect.width / this.renderer.camera.zoom); const fontSize = Math.max(10, Math.min(180, Number(size.value) || 20)); const fontWeight = bold.getAttribute("aria-pressed") === "true" ? 700 as const : 400 as const; const fontStyle = italic.getAttribute("aria-pressed") === "true" ? "italic" as const : "normal" as const; const textDecoration = underline.getAttribute("aria-pressed") === "true" ? "underline" as const : "none" as const;
-      if (existing) { const current = this.store.document.elements.find((element) => element.id === existing.id); if (current?.type === "text") { current.text = text; current.width = width; current.blockStyle = style.value as typeof current.blockStyle; current.fontSize = fontSize; current.fontFamily = family.value as typeof current.fontFamily; current.fontWeight = fontWeight; current.fontStyle = fontStyle; current.textDecoration = textDecoration; current.textAlign = alignment; current.color = color.value; current.height = Math.max(contentHeight, estimateTextHeight(text, width, fontSize)); } }
+      if (existing) { const current = this.store.document.elements.find((element) => element.id === existing.id); if (current?.type === "text") { current.text = text; current.width = width; current.blockStyle = style.value as typeof current.blockStyle; current.fontSize = fontSize; current.fontFamily = family.value as typeof current.fontFamily; current.fontWeight = fontWeight; current.fontStyle = fontStyle; current.textDecoration = textDecoration; current.textAlign = alignment; current.color = color.value; current.height = Math.max(contentHeight, estimateTextHeight(text, width, fontSize, current)); } }
       else if (sticky) { const ids = this.store.applyOperation({ type: "create_note", x: point.x, y: point.y, width, height: Math.max(100, contentHeight), text, color: color.value, blockStyle: style.value as Extract<PageElement, { type: "text" }>["blockStyle"] }, "human"); const parentId = this.parentArtboardAt(point)?.id; ids.forEach((id) => { const element = this.store.document.elements.find((candidate) => candidate.id === id); if (element) element.parentId = parentId; }); }
-      else { const element: Extract<PageElement, { type: "text" }> = { type: "text", id: uuid("text"), x: point.x, baseline: point.y + fontSize, width, height: Math.max(contentHeight, estimateTextHeight(text, width, fontSize)), fontSize, color: color.value, text, fontFamily: family.value as Extract<PageElement, { type: "text" }>["fontFamily"], fontWeight, fontStyle, textDecoration, textAlign: alignment, blockStyle: style.value as Extract<PageElement, { type: "text" }>["blockStyle"], semanticRole: "text-field", parentId: this.parentArtboardAt(point)?.id }; this.store.document.elements.push(element); }
+      else { const element: Extract<PageElement, { type: "text" }> = { type: "text", id: uuid("text"), x: point.x, baseline: point.y + fontSize, width, height: Math.max(contentHeight, estimateTextHeight(text, width, fontSize, { fontFamily: family.value as Extract<PageElement, { type: "text" }>["fontFamily"], fontWeight, fontStyle, blockStyle: style.value as Extract<PageElement, { type: "text" }>["blockStyle"] })), fontSize, color: color.value, text, fontFamily: family.value as Extract<PageElement, { type: "text" }>["fontFamily"], fontWeight, fontStyle, textDecoration, textAlign: alignment, blockStyle: style.value as Extract<PageElement, { type: "text" }>["blockStyle"], semanticRole: "text-field", parentId: this.parentArtboardAt(point)?.id }; this.store.document.elements.push(element); }
       this.store.changed(); };
     const cancel = (): void => { if (committed) return; committed = true; shell.remove(); };
     done.addEventListener("click", commit); shell.addEventListener("focusout", () => window.setTimeout(() => { if (shell.isConnected && !shell.contains(document.activeElement)) commit(); }, 0)); input.addEventListener("keydown", (event) => { if (event.key === "Escape") { event.preventDefault(); cancel(); } if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); event.stopPropagation(); commit(); this.submitHumanTurn(); } });
@@ -439,16 +440,37 @@ export class WhiteboardApp {
   }
 
   private bindExplanationControls(): void {
-    byId<HTMLButtonElement>("explanation-prev").addEventListener("click", () => this.stepExplanation(-1)); byId<HTMLButtonElement>("explanation-next").addEventListener("click", () => this.stepExplanation(1)); byId<HTMLButtonElement>("explanation-overview").addEventListener("click", () => { this.activeExplanation = null; this.renderer.explanationState = null; this.renderer.request(); this.refreshExplanationControls(); });
-    this.refreshExplanationControls();
+    byId<HTMLButtonElement>("explanation-prev").addEventListener("click", () => this.stepExplanation(-1)); byId<HTMLButtonElement>("explanation-next").addEventListener("click", () => this.stepExplanation(1));
+    byId<HTMLButtonElement>("explanation-overview").addEventListener("click", () => { this.store.document.presentation = null; this.store.changed("metadata"); });
+    this.syncExplanation();
   }
 
+  /** The active step lives in the document, so a reload keeps it and the agent can move it with present_step. */
   private stepExplanation(delta: number): void {
-    const sequence = this.activeExplanation?.sequence ?? this.store.document.explanationSequences[0]; if (!sequence?.steps.length) return; const index = this.activeExplanation ? Math.max(0, Math.min(sequence.steps.length - 1, this.activeExplanation.index + delta)) : delta < 0 ? sequence.steps.length - 1 : 0; this.activeExplanation = { sequence, index }; this.renderer.explanationState = this.activeExplanation; const step = sequence.steps[index]; const focus = step.cameraBounds ?? boardBounds(this.store.document.elements.filter((element) => step.focusElementIds.includes(element.id))); if (focus) this.renderer.fitBounds(focus); this.renderer.request(); this.refreshExplanationControls();
+    const current = this.activeExplanation; const sequence = current?.sequence ?? this.store.document.explanationSequences[0]; if (!sequence?.steps.length) return;
+    const index = current ? Math.max(0, Math.min(sequence.steps.length - 1, current.index + delta)) : delta < 0 ? sequence.steps.length - 1 : 0;
+    this.store.document.presentation = { sequenceId: sequence.id, index }; this.store.changed("metadata");
+  }
+
+  private syncExplanation(): void {
+    const presentation = this.store.document.presentation ?? null;
+    const sequence = presentation ? this.store.document.explanationSequences.find((candidate) => candidate.id === presentation.sequenceId) : undefined;
+    const state = sequence?.steps.length ? { sequence, index: Math.max(0, Math.min(sequence.steps.length - 1, presentation!.index)) } : null;
+    this.activeExplanation = state; this.renderer.explanationState = state;
+    const key = state ? `${state.sequence.id}:${state.index}` : "";
+    if (key && key !== this.presentationKey) {
+      const step = state!.sequence.steps[state!.index];
+      const focus = step.cameraBounds ?? boardBounds(this.store.document.elements.filter((element) => step.focusElementIds.includes(element.id)));
+      if (focus) this.renderer.fitBounds(focus);
+    }
+    this.presentationKey = key; this.renderer.request(); this.refreshExplanationControls();
   }
 
   private refreshExplanationControls(): void {
-    const sequence = this.activeExplanation?.sequence ?? this.store.document.explanationSequences[0]; this.explanationControls.hidden = !sequence; if (!sequence) return; const label = this.activeExplanation ? `${this.activeExplanation.index + 1}/${sequence.steps.length} · ${sequence.steps[this.activeExplanation.index].title}` : `${sequence.title} · Overview`; byId<HTMLElement>("explanation-title").textContent = label;
+    const active = this.activeExplanation; const sequence = active?.sequence ?? this.store.document.explanationSequences[0]; this.explanationControls.hidden = !sequence; if (!sequence) return;
+    const step = active ? sequence.steps[active.index] : null;
+    byId<HTMLElement>("explanation-title").textContent = step ? `${active!.index + 1}/${sequence.steps.length} · ${step.title}` : `${sequence.title} · Overview`;
+    const body = byId<HTMLElement>("explanation-body"); body.textContent = step?.body ?? ""; body.hidden = !step?.body;
   }
 
   private clearBoard(): void { if (!this.guardHumanMutation() || this.store.document.elements.length === 0 || !window.confirm("Clear the entire whiteboard?")) return; this.renderer.selectionIds.clear(); this.store.clear(); }
@@ -462,7 +484,7 @@ export class WhiteboardApp {
   private resizeSelectedText(delta: number): void {
     if (!this.collaboration.canHumanMutateBoard()) { this.setStatus(this.collaboration.mutationLockMessage(), 1800); return; }
     const texts = this.selectedElements().filter((element): element is Extract<PageElement, { type: "text" }> => element.type === "text"); if (!texts.length) return; this.store.checkpoint();
-    for (const text of texts) { text.fontSize = Math.max(10, Math.min(180, text.fontSize + delta)); text.height = estimateTextHeight(text.text, text.width, text.fontSize); } this.store.changed();
+    for (const text of texts) { text.fontSize = Math.max(10, Math.min(180, text.fontSize + delta)); text.height = estimateTextHeight(text.text, text.width, text.fontSize, text); } this.store.changed();
   }
   private deleteSelection(): void {
     if (!this.collaboration.canHumanMutateBoard()) { this.setStatus(this.collaboration.mutationLockMessage(), 1800); return; }
@@ -493,7 +515,7 @@ export class WhiteboardApp {
     byId<HTMLSpanElement>("revision").textContent = `r${this.store.document.revision}`;
     const submit = byId<HTMLButtonElement>("submit-turn"); const busy = ["queued", "claimed", "planning", "working", "review"].includes(state);
     submit.classList.toggle("is-waiting", busy && state !== "review"); submit.disabled = busy;
-    this.refreshExplanationControls(); this.updateZoom(); this.updateContextPrompt();
+    this.syncExplanation(); this.updateZoom(); this.updateContextPrompt();
   }
   private updateZoom(): void { byId<HTMLSpanElement>("zoom").textContent = `${Math.round(this.renderer.camera.zoom * 100)}%`; }
   private updateContextPrompt(): void {

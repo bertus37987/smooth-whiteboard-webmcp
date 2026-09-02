@@ -1,5 +1,5 @@
 import { PageElement, elementBounds } from "../src/document";
-import { cachedImage, drawBoardElement } from "../src/rendering";
+import { cachedImage, drawBoardElement, isSketchShape, sketchOutline, sketchShapeClosed } from "../src/rendering";
 import { WhiteboardDocument, boardBounds } from "./model";
 
 type Bounds = { minX: number; minY: number; maxX: number; maxY: number };
@@ -49,11 +49,17 @@ function svgForElement(element: PageElement, offsetX: number, offsetY: number): 
     const start = element.points[0]; const end = element.points.at(-1)!; const heads = `${element.startArrow ? `<polygon points="${head(start, end)}" fill="${escapeXml(element.color)}"/>` : ""}${element.endArrow !== false ? `<polygon points="${head(end, start)}" fill="${escapeXml(element.color)}"/>` : ""}`;
     return `<g transform="${translate}" opacity="${opacity}"><polyline points="${points}" fill="none" stroke="${escapeXml(element.color)}" stroke-width="${element.size}" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="${dash}"/>${heads}</g>`;
   }
+  if (isSketchShape(element)) {
+    // Same seeded geometry as the canvas, so an SVG export matches what the human saw.
+    const closed = sketchShapeClosed(element); const trace = (pass: number): string => sketchOutline(element, pass).map((point) => `${point.x},${point.y}`).join(" ");
+    const tag = closed ? "polygon" : "polyline";
+    return `<g transform="${translate}" opacity="${opacity}"><${tag} points="${trace(0)}" fill="${fill}" fill-opacity="${fillOpacity}" stroke="${escapeXml(element.color)}" stroke-width="${element.size}" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="${dash}"/><${tag} points="${trace(1)}" fill="none" stroke="${escapeXml(element.color)}" stroke-width="${Math.max(.6, element.size * .75)}" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/></g>`;
+  }
   if ((element.kind === "rectangle" || element.kind === "ellipse") && element.points.length >= 2) { const box = elementBounds(element); if (element.kind === "ellipse") return `<ellipse transform="${translate}" cx="${(box.minX + box.maxX) / 2}" cy="${(box.minY + box.maxY) / 2}" rx="${(box.maxX - box.minX) / 2}" ry="${(box.maxY - box.minY) / 2}" fill="${fill}" fill-opacity="${fillOpacity}" stroke="${escapeXml(element.color)}" stroke-width="${element.size}" stroke-dasharray="${dash}" opacity="${opacity}"/>`; return `<rect transform="${translate}" x="${box.minX}" y="${box.minY}" width="${box.maxX - box.minX}" height="${box.maxY - box.minY}" rx="${element.radius ?? 0}" fill="${fill}" fill-opacity="${fillOpacity}" stroke="${escapeXml(element.color)}" stroke-width="${element.size}" stroke-dasharray="${dash}" opacity="${opacity}"/>`; }
   return `<${element.closed ? "polygon" : "polyline"} transform="${translate}" points="${points}" fill="${fill}" fill-opacity="${fillOpacity}" stroke="${escapeXml(element.color)}" stroke-width="${element.size}" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="${dash}" opacity="${opacity}"/>`;
 }
 
-function makeSvg(page: ExportPage): string { const width = page.bounds.maxX - page.bounds.minX; const height = page.bounds.maxY - page.bounds.minY; return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><rect width="100%" height="100%" fill="#ffffff"/>${page.elements.map((element) => svgForElement(element, page.bounds.minX, page.bounds.minY)).join("")}</svg>`; }
+export function makeSvg(page: ExportPage): string { const width = page.bounds.maxX - page.bounds.minX; const height = page.bounds.maxY - page.bounds.minY; return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><rect width="100%" height="100%" fill="#ffffff"/>${page.elements.map((element) => svgForElement(element, page.bounds.minX, page.bounds.minY)).join("")}</svg>`; }
 
 const bytes = (value: string): Uint8Array => new TextEncoder().encode(value);
 const concat = (parts: Uint8Array[]): Uint8Array => { const length = parts.reduce((sum, part) => sum + part.length, 0); const output = new Uint8Array(length); let offset = 0; for (const part of parts) { output.set(part, offset); offset += part.length; } return output; };
