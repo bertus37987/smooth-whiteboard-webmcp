@@ -1,27 +1,27 @@
-import { PageElement } from "../src/document";
-import { CanvasOperation, WhiteboardDocument, boardBounds, cloneBoard, connectionPoints, emptyBoard, estimateTextHeight, migrateBoard, operationElement, scaleElement, translateElement } from "./model";
+import { PageElement, elementBounds } from "../src/document";
+import { Bounds, CanvasOperation, WhiteboardDocument, boardBounds, cloneBoard, connectionPoints, elementSignature, emptyBoard, estimateTextHeight, iconSegments, migrateBoard, operationElement, scaleElement, translateElement } from "./model";
 
 const STORAGE_KEY = "smooth-whiteboard-v3";
 const LEGACY_STORAGE_KEY = "smooth-whiteboard-v1";
 const PRE_AGENT_STORAGE_KEY = "smooth-whiteboard-pre-agent-v1";
 
-function iconSegments(name: Extract<CanvasOperation, { type: "create_icon" }>["name"], x: number, y: number, size: number): Array<Array<{ x: number; y: number; pressure: number }>> {
-  const point = (px: number, py: number) => ({ x: x + px * size, y: y + py * size, pressure: .5 });
-  if (name === "check") return [[point(.08, .52), point(.38, .82), point(.92, .16)]];
-  if (name === "close") return [[point(.14, .14), point(.86, .86)], [point(.86, .14), point(.14, .86)]];
-  if (name === "plus") return [[point(.5, .08), point(.5, .92)], [point(.08, .5), point(.92, .5)]];
-  if (name === "minus") return [[point(.08, .5), point(.92, .5)]];
-  if (name === "menu") return [[point(.08, .22), point(.92, .22)], [point(.08, .5), point(.92, .5)], [point(.08, .78), point(.92, .78)]];
-  if (name === "search") return [[...Array.from({ length: 17 }, (_, index) => { const angle = index / 16 * Math.PI * 2; return point(.38 + Math.cos(angle) * .28, .38 + Math.sin(angle) * .28); })], [point(.58, .58), point(.92, .92)]];
-  if (name === "user") return [[...Array.from({ length: 17 }, (_, index) => { const angle = index / 16 * Math.PI * 2; return point(.5 + Math.cos(angle) * .19, .28 + Math.sin(angle) * .19); })], [point(.12, .92), point(.18, .66), point(.5, .55), point(.82, .66), point(.88, .92)]];
-  return [[point(.5, .9), point(.12, .5), point(.16, .2), point(.38, .1), point(.5, .3), point(.62, .1), point(.84, .2), point(.88, .5), point(.5, .9)]];
-}
+/**
+ * "content" bumps the canvas revision an agent inspects; "metadata" persists session bookkeeping
+ * (claim, plan, status, lease) without invalidating an inspected baseRevision.
+ */
+export type ChangeKind = "content" | "metadata";
+/** "reset" refreshes the mutation baseline silently (import, clear, restore). */
+export type ChangeSource = "human" | "agent" | "reset";
+export interface ContentMutation { source: "human" | "agent"; changedIds: string[]; removedIds: string[]; removedRegions: Array<{ id: string; bounds: Bounds }> }
 
 export class BoardStore extends EventTarget {
   document: WhiteboardDocument;
+  /** Single place every human board mutation is observed, whichever UI handler caused it. */
+  onContentMutation: ((mutation: ContentMutation) => void) | null = null;
   private undoStack: WhiteboardDocument[] = [];
   private redoStack: WhiteboardDocument[] = [];
   private agentBefore: WhiteboardDocument | null = null;
+  private mutationBaseline = new Map<string, { signature: string; bounds: Bounds }>();
 
   constructor() {
     super();
@@ -30,25 +30,57 @@ export class BoardStore extends EventTarget {
     this.document.connections ??= {}; this.document.groups ??= {}; this.document.artboardIds ??= []; this.document.explanationSequences ??= []; this.document.sources ??= [];
     try { const snapshot = migrateBoard(JSON.parse(localStorage.getItem(PRE_AGENT_STORAGE_KEY) ?? "null") as unknown); if (snapshot && this.document.turn && ["working", "review"].includes(this.document.turn.status)) this.agentBefore = snapshot; }
     catch { this.agentBefore = null; }
-    this.refreshConnections(); this.cleanGroups();
+    this.refreshConnections(); this.cleanGroups(); this.resetMutationBaseline();
   }
 
   checkpoint(): void { this.undoStack.push(cloneBoard(this.document)); if (this.undoStack.length > 100) this.undoStack.shift(); this.redoStack = []; }
 
-  changed(): void {
-    this.refreshConnections(); this.cleanGroups(); this.document.revision += 1; localStorage.setItem(STORAGE_KEY, JSON.stringify(this.document)); this.dispatchEvent(new Event("change"));
+  changed(kind: ChangeKind = "content", source: ChangeSource = "human"): void {
+    this.refreshConnections(); this.cleanGroups();
+    if (kind === "content") { this.document.revision += 1; this.trackMutation(source); }
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(this.document)); this.dispatchEvent(new Event("change"));
   }
 
-  replace(document: WhiteboardDocument): void { this.agentBefore = null; localStorage.removeItem(PRE_AGENT_STORAGE_KEY); this.document = cloneBoard(document); this.changed(); }
+  /** Content revision the agent inspects; session bookkeeping never advances it. */
+  contentRevision(): number { return this.document.revision; }
 
+  resetMutationBaseline(): void {
+    this.mutationBaseline = new Map(this.document.elements.map((element) => [element.id, { signature: elementSignature(element), bounds: elementBounds(element) }]));
+  }
+
+  private trackMutation(source: ChangeSource): void {
+    const next = new Map<string, { signature: string; bounds: Bounds }>();
+    const changedIds: string[] = [];
+    for (const element of this.document.elements) {
+      const signature = elementSignature(element); next.set(element.id, { signature, bounds: elementBounds(element) });
+      const previous = this.mutationBaseline.get(element.id);
+      if (!previous || previous.signature !== signature) changedIds.push(element.id);
+    }
+    // Relative order of surviving elements: catches reorder, which no value signature can see.
+    const before = [...this.mutationBaseline.keys()].filter((id) => next.has(id));
+    const after = this.document.elements.map((element) => element.id).filter((id) => this.mutationBaseline.has(id));
+    for (const [index, id] of after.entries()) if (before[index] !== id && !changedIds.includes(id)) changedIds.push(id);
+    const removedRegions: Array<{ id: string; bounds: Bounds }> = [];
+    for (const [id, value] of this.mutationBaseline) if (!next.has(id)) removedRegions.push({ id, bounds: value.bounds });
+    this.mutationBaseline = next;
+    if (source === "reset" || (!changedIds.length && !removedRegions.length)) return;
+    this.onContentMutation?.({ source, changedIds, removedIds: removedRegions.map((region) => region.id), removedRegions });
+  }
+
+  replace(document: WhiteboardDocument): void { this.agentBefore = null; localStorage.removeItem(PRE_AGENT_STORAGE_KEY); this.document = cloneBoard(document); this.resetMutationBaseline(); this.changed("content", "reset"); }
+
+  // Undo/redo travel through canvas content only: the live turn and its lease are session state
+  // and must not be resurrected or destroyed by a history step.
   undo(): boolean {
     const previous = this.undoStack.pop(); if (!previous) return false;
-    this.redoStack.push(cloneBoard(this.document)); this.document = previous; this.changed(); return true;
+    const turn = this.document.turn;
+    this.redoStack.push(cloneBoard(this.document)); this.document = previous; this.document.turn = turn; this.changed(); return true;
   }
 
   redo(): boolean {
     const next = this.redoStack.pop(); if (!next) return false;
-    this.undoStack.push(cloneBoard(this.document)); this.document = next; this.changed(); return true;
+    const turn = this.document.turn;
+    this.undoStack.push(cloneBoard(this.document)); this.document = next; this.document.turn = turn; this.changed(); return true;
   }
 
   beginAgentContribution(): void {
@@ -57,11 +89,13 @@ export class BoardStore extends EventTarget {
   }
 
   acceptAgentContribution(): void {
-    this.agentBefore = null; localStorage.removeItem(PRE_AGENT_STORAGE_KEY); if (this.document.turn) { this.document.turn.status = "complete"; this.document.turn.promptText = ""; this.document.turn.instructionInk = []; this.document.turn.agentMarkers = []; this.document.turn.pendingChangeIds = []; this.document.turn.leaseToken = undefined; } this.document.lastAgentRevision = this.document.revision; this.changed();
+    this.agentBefore = null; localStorage.removeItem(PRE_AGENT_STORAGE_KEY); if (this.document.turn) { this.document.turn.status = "complete"; this.document.turn.promptText = ""; this.document.turn.instructionInk = []; this.document.turn.agentMarkers = []; this.document.turn.pendingChangeIds = []; this.document.turn.leaseToken = undefined; } this.document.lastAgentRevision = this.document.revision; this.changed("metadata");
   }
 
   undoAgentContribution(): boolean {
-    if (!this.agentBefore) return false; const cancelledTurn = this.document.turn; this.document = this.agentBefore; this.agentBefore = null; localStorage.removeItem(PRE_AGENT_STORAGE_KEY); if (cancelledTurn) this.document.turn = { ...cancelledTurn, status: "cancelled", instructionInk: [], agentMarkers: [], pendingChangeIds: [], leaseToken: undefined }; this.changed(); return true;
+    if (!this.agentBefore) return false; const cancelledTurn = this.document.turn; this.document = this.agentBefore; this.agentBefore = null; localStorage.removeItem(PRE_AGENT_STORAGE_KEY); if (cancelledTurn) this.document.turn = { ...cancelledTurn, status: "cancelled", instructionInk: [], agentMarkers: [], pendingChangeIds: [], leaseToken: undefined };
+    // The rollback removes agent content, not human work: refresh the baseline without reporting it as human feedback.
+    this.changed("content", "agent"); return true;
   }
 
   hasAgentContribution(): boolean { return this.agentBefore !== null; }
@@ -72,7 +106,11 @@ export class BoardStore extends EventTarget {
 
   expandGroupIds(ids: string[]): string[] {
     const expanded = new Set(ids); const groups = this.document.groups ?? {};
-    for (const id of ids) { const groupId = this.groupIdFor(id); if (groupId) groups[groupId]?.forEach((member) => expanded.add(member)); }
+    for (const id of ids) {
+      // An id may address a group directly (agents see groupId in inspect output) or a member of one.
+      if (groups[id]) groups[id].forEach((member) => expanded.add(member));
+      const groupId = this.groupIdFor(id); if (groupId) groups[groupId]?.forEach((member) => expanded.add(member));
+    }
     let changed = true; while (changed) { changed = false; for (const element of this.document.elements) if (element.parentId && expanded.has(element.parentId) && !expanded.has(element.id)) { expanded.add(element.id); changed = true; } }
     return [...expanded];
   }
@@ -248,5 +286,5 @@ export class BoardStore extends EventTarget {
     for (const element of this.document.elements) if (element.parentId && !existing.has(element.parentId)) delete element.parentId;
   }
 
-  clear(): void { this.checkpoint(); this.agentBefore = null; localStorage.removeItem(PRE_AGENT_STORAGE_KEY); this.document = emptyBoard(); this.changed(); }
+  clear(): void { this.checkpoint(); this.agentBefore = null; localStorage.removeItem(PRE_AGENT_STORAGE_KEY); this.document = emptyBoard(); this.resetMutationBaseline(); this.changed("content", "reset"); }
 }

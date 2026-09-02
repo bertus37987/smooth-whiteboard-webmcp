@@ -2,6 +2,7 @@ import { PageElement, ShapeElement, TextElement, boundsForElements, elementBound
 import { InkPoint } from "../src/strokes";
 
 export interface Camera { x: number; y: number; zoom: number }
+export interface Bounds { minX: number; minY: number; maxX: number; maxY: number }
 export interface WhiteboardSettings {
   inputSmoothing: boolean;
   pressure: boolean;
@@ -10,7 +11,7 @@ export interface WhiteboardSettings {
   englishHandwritingAssist: boolean;
 }
 export interface PriorityRegion {
-  source: "ai-pen" | "attachment" | "selection" | "highlight" | "recent-edit";
+  source: "ai-pen" | "attachment" | "selection" | "highlight" | "recent-edit" | "deleted";
   bounds: { minX: number; minY: number; maxX: number; maxY: number };
   elementIds: string[];
   priority: number;
@@ -41,9 +42,26 @@ export interface BoardLintIssue {
   message: string;
   suggestedFix: string;
 }
+export type TurnStatus = "queued" | "claimed" | "planning" | "working" | "review" | "complete" | "cancelled";
+/** Session level state: turn statuses plus the two states that exist while no turn is open. */
+export type SessionState = TurnStatus | "idle" | "waiting";
+export type ContextScope = "all" | "priority" | "selection";
+export interface DeletedRegion { elementIds: string[]; bounds: Bounds }
+export interface TurnCapabilities {
+  state: SessionState;
+  canWait: boolean;
+  canInspect: boolean;
+  canFocus: boolean;
+  canWrite: boolean;
+  canComplete: boolean;
+  hasLease: boolean;
+  awaitingHumanDecision: boolean;
+  nextAction: string;
+  contextScope: ContextScope | null;
+}
 export interface CollaborationTurn {
   id: string;
-  status: "queued" | "claimed" | "planning" | "working" | "review" | "complete" | "cancelled";
+  status: TurnStatus;
   submittedRevision: number;
   createdAt: string;
   promptText: string;
@@ -53,6 +71,10 @@ export interface CollaborationTurn {
   priorityRegions: PriorityRegion[];
   changedElementIds: string[];
   pendingChangeIds: string[];
+  /** Frozen at submit time: which part of the board the human meant. */
+  contextScope?: ContextScope;
+  /** Where the human removed content before submitting; ids no longer resolve, the bounds still do. */
+  deletedRegions?: DeletedRegion[];
   planSummary?: string;
   leaseToken?: string;
 }
@@ -252,12 +274,22 @@ export function estimateTextHeight(text: string, width: number, fontSize: number
   return Math.max(fontSize * 1.2, lines * fontSize * 1.22);
 }
 
-export function elementSummary(element: PageElement): Record<string, unknown> {
+/**
+ * Compact by default: sampled geometry is replaced by a point count so that a handwritten board
+ * stays inside a sane tool-output budget. Pass "geometry" for targeted point-level inspection.
+ */
+export function elementSummary(element: PageElement, detail: "summary" | "geometry" = "summary"): Record<string, unknown> {
   const bounds = elementBounds(element); const base = { id: element.id, type: element.type, bounds, name: element.name ?? null, parentId: element.parentId ?? null, artboard: element.artboard ?? null, sourceRefs: element.sourceRefs ?? [], locked: element.locked ?? false, semanticRole: element.semanticRole ?? null, renderStyle: element.renderStyle ?? "clean", opacity: element.opacity ?? 1, agentAttached: element.agentAttached ?? false };
+  const geometry = (points: InkPoint[] | undefined): Record<string, unknown> => {
+    if (!points) return { points: null, pointCount: 0 };
+    // Endpoint-defined shapes (rectangle, ellipse, arrow, line) stay readable at any detail level.
+    if (detail === "geometry" || points.length <= 4) return { points, pointCount: points.length };
+    return { points: null, pointCount: points.length };
+  };
   if (element.type === "text") return { ...base, text: element.text, fontSize: element.fontSize, color: element.color, width: element.width, height: element.height, fontFamily: element.fontFamily ?? "sans", fontWeight: element.fontWeight ?? 400, fontStyle: element.fontStyle ?? "normal", textDecoration: element.textDecoration ?? "none", textAlign: element.textAlign ?? "left", blockStyle: element.blockStyle ?? "body", highlightColor: element.highlightColor ?? null };
-  if (element.type === "shape") return { ...base, kind: element.kind, points: element.points, color: element.color, strokeWidth: element.size, fillColor: element.fillColor, fillOpacity: element.fillOpacity ?? 0, radius: element.radius ?? 0, lineStyle: element.lineStyle ?? "solid", arrowHeads: element.startArrow ? (element.endArrow === false ? "start" : "both") : "end" };
-  if (element.type === "highlight") return { ...base, x1: element.x1, x2: element.x2, y: element.y, points: element.points ?? null, size: element.size, color: element.color, opacity: element.opacity };
-  if (element.type === "stroke") return { ...base, points: element.points, color: element.color, strokeWidth: element.size, recognitionText: element.recognitionText ?? null };
+  if (element.type === "shape") return { ...base, kind: element.kind, ...geometry(element.points), color: element.color, strokeWidth: element.size, fillColor: element.fillColor, fillOpacity: element.fillOpacity ?? 0, radius: element.radius ?? 0, lineStyle: element.lineStyle ?? "solid", arrowHeads: element.startArrow ? (element.endArrow === false ? "start" : "both") : "end" };
+  if (element.type === "highlight") return { ...base, x1: element.x1, x2: element.x2, y: element.y, ...geometry(element.points), size: element.size, color: element.color, opacity: element.opacity };
+  if (element.type === "stroke") return { ...base, ...geometry(element.points), color: element.color, strokeWidth: element.size, recognitionText: element.recognitionText ?? null };
   if (element.type === "image") return { ...base, sourceName: element.sourceName ?? "image" };
   return base;
 }
@@ -382,4 +414,156 @@ export function connectionPoints(from: PageElement, to: PageElement): { from: In
     const scale = Math.min(tx, ty); return { x: start.x + dx * scale, y: start.y + dy * scale, pressure: 0.5 };
   };
   return { from: anchor(a, ac, bc), to: anchor(b, bc, ac) };
+}
+
+/* ------------------------------------------------------------------ *
+ * Spatial helpers shared by the AI-Pen gesture resolver and the tests. *
+ * ------------------------------------------------------------------ */
+
+export function expandBounds(bounds: Bounds, padding: number): Bounds {
+  return { minX: bounds.minX - padding, minY: bounds.minY - padding, maxX: bounds.maxX + padding, maxY: bounds.maxY + padding };
+}
+
+export function boundsIntersect(a: Bounds, b: Bounds): boolean {
+  return a.minX <= b.maxX && a.maxX >= b.minX && a.minY <= b.maxY && a.maxY >= b.minY;
+}
+
+export function boundsOverlapArea(a: Bounds, b: Bounds): number {
+  return Math.max(0, Math.min(a.maxX, b.maxX) - Math.max(a.minX, b.minX)) * Math.max(0, Math.min(a.maxY, b.maxY) - Math.max(a.minY, b.minY));
+}
+
+export function boundsForPoints(points: InkPoint[]): Bounds {
+  return { minX: Math.min(...points.map((point) => point.x)), minY: Math.min(...points.map((point) => point.y)), maxX: Math.max(...points.map((point) => point.x)), maxY: Math.max(...points.map((point) => point.y)) };
+}
+
+/**
+ * Turn a pointing gesture (AI pen bounds, lasso bounds) into the elements a person would read
+ * as "these ones": everything the padded gesture actually covers, ranked by how much of each
+ * element it covers, with a nearest-neighbour fallback for a bare arrow or dot.
+ */
+export function resolveGestureElements(elements: PageElement[], gesture: Bounds, limit = 12): string[] {
+  const span = Math.max(gesture.maxX - gesture.minX, gesture.maxY - gesture.minY);
+  const padding = Math.max(28, Math.min(140, span * 0.3));
+  const padded = expandBounds(gesture, padding);
+  const candidates = elements.map((element) => ({ element, bounds: elementBounds(element) }));
+  const covered = candidates
+    .map(({ element, bounds }) => {
+      const area = Math.max(1, (bounds.maxX - bounds.minX) * (bounds.maxY - bounds.minY));
+      return { id: element.id, score: boundsOverlapArea(padded, bounds) / area, touches: boundsIntersect(padded, bounds) };
+    })
+    .filter((candidate) => candidate.touches && candidate.score > 0.02)
+    .sort((left, right) => right.score - left.score)
+    .slice(0, limit)
+    .map((candidate) => candidate.id);
+  if (covered.length) return covered;
+  const centre = { x: (gesture.minX + gesture.maxX) / 2, y: (gesture.minY + gesture.maxY) / 2 };
+  const reach = Math.max(180, span * 1.5);
+  return candidates
+    .map(({ element, bounds }) => ({ id: element.id, distance: Math.hypot(Math.max(bounds.minX - centre.x, 0, centre.x - bounds.maxX), Math.max(bounds.minY - centre.y, 0, centre.y - bounds.maxY)) }))
+    .filter((candidate) => candidate.distance <= reach)
+    .sort((left, right) => left.distance - right.distance)
+    .slice(0, 3)
+    .map((candidate) => candidate.id);
+}
+
+/**
+ * Cheap value fingerprint of one element. Any visible edit (position, size, text, style,
+ * geometry, nesting) changes it, so human mutations can be detected centrally instead of
+ * relying on every UI handler to remember to report itself.
+ */
+export function elementSignature(element: PageElement): string {
+  const bounds = elementBounds(element);
+  const round = (value: number): number => Math.round(value * 10) / 10;
+  const box = `${round(bounds.minX)},${round(bounds.minY)},${round(bounds.maxX)},${round(bounds.maxY)}`;
+  const shared = `${element.parentId ?? ""}|${element.locked ? 1 : 0}|${element.opacity ?? 1}|${element.semanticRole ?? ""}|${element.name ?? ""}|${element.agentAttached ? 1 : 0}`;
+  if (element.type === "text") return `text|${box}|${element.text}|${element.fontSize}|${element.color}|${element.width}|${element.fontFamily ?? ""}|${element.fontWeight ?? ""}|${element.fontStyle ?? ""}|${element.textDecoration ?? ""}|${element.textAlign ?? ""}|${element.blockStyle ?? ""}|${element.highlightColor ?? ""}|${shared}`;
+  if (element.type === "shape") return `shape|${box}|${element.kind}|${element.points.length}|${element.color}|${element.size}|${element.fillColor ?? ""}|${element.fillOpacity ?? 0}|${element.radius ?? 0}|${element.lineStyle ?? ""}|${element.startArrow ? 1 : 0}|${element.endArrow === false ? 0 : 1}|${shared}`;
+  if (element.type === "stroke") return `stroke|${box}|${element.points.length}|${element.color}|${element.size}|${element.recognitionText ?? ""}|${shared}`;
+  if (element.type === "highlight") return `highlight|${box}|${element.points?.length ?? 0}|${element.color}|${element.size}|${element.opacity}|${shared}`;
+  return `image|${box}|${element.width}|${element.height}|${element.sourceName ?? ""}|${shared}`;
+}
+
+/* ---------------------------------------------------- *
+ * Operation preflight: no batch may partially mutate.   *
+ * ---------------------------------------------------- */
+
+export function iconSegments(name: Extract<CanvasOperation, { type: "create_icon" }>["name"], x: number, y: number, size: number): Array<Array<{ x: number; y: number; pressure: number }>> {
+  const point = (px: number, py: number) => ({ x: x + px * size, y: y + py * size, pressure: .5 });
+  if (name === "check") return [[point(.08, .52), point(.38, .82), point(.92, .16)]];
+  if (name === "close") return [[point(.14, .14), point(.86, .86)], [point(.86, .14), point(.14, .86)]];
+  if (name === "plus") return [[point(.5, .08), point(.5, .92)], [point(.08, .5), point(.92, .5)]];
+  if (name === "minus") return [[point(.08, .5), point(.92, .5)]];
+  if (name === "menu") return [[point(.08, .22), point(.92, .22)], [point(.08, .5), point(.92, .5)], [point(.08, .78), point(.92, .78)]];
+  if (name === "search") return [[...Array.from({ length: 17 }, (_, index) => { const angle = index / 16 * Math.PI * 2; return point(.38 + Math.cos(angle) * .28, .38 + Math.sin(angle) * .28); })], [point(.58, .58), point(.92, .92)]];
+  if (name === "user") return [[...Array.from({ length: 17 }, (_, index) => { const angle = index / 16 * Math.PI * 2; return point(.5 + Math.cos(angle) * .19, .28 + Math.sin(angle) * .19); })], [point(.12, .92), point(.18, .66), point(.5, .55), point(.82, .66), point(.88, .92)]];
+  return [[point(.5, .9), point(.12, .5), point(.16, .2), point(.38, .1), point(.5, .3), point(.62, .1), point(.84, .2), point(.88, .5), point(.5, .9)]];
+}
+
+export function tableCellIds(operation: Extract<CanvasOperation, { type: "create_table" }>, prefix: string): string[] {
+  const rows = Math.max(1, Math.min(20, Math.round(operation.rows))); const columns = Math.max(1, Math.min(12, Math.round(operation.columns))); const created: string[] = [];
+  for (let row = 0; row < rows; row += 1) for (let column = 0; column < columns; column += 1) {
+    created.push(`${prefix}-cell-${row}-${column}`);
+    const value = row === 0 && operation.headers?.[column] ? operation.headers[column] : operation.cells?.[row * columns + column];
+    if (value) created.push(`${prefix}-text-${row}-${column}`);
+  }
+  return created;
+}
+
+/** Every concrete element id an operation will create when it carries an explicit id. */
+export function plannedElementIds(operation: CanvasOperation): string[] {
+  const explicit = "id" in operation && typeof operation.id === "string" ? operation.id : undefined;
+  if (!explicit) return [];
+  switch (operation.type) {
+    case "create_text": case "create_highlight": case "create_shape": case "create_arrow": case "create_stroke": case "create_polygon": case "connect": return [explicit];
+    case "create_note": return [`${explicit}-card`, `${explicit}-text`];
+    case "create_frame": return operation.title ? [`${explicit}-border`, `${explicit}-title`] : [`${explicit}-border`];
+    case "create_table": return tableCellIds(operation, explicit);
+    case "create_icon": return iconSegments(operation.name, 0, 0, 32).map((_, index) => `${explicit}-${index}`);
+    default: return [];
+  }
+}
+
+/** Group ids an operation registers, so later operations may address the composite. */
+export function plannedGroupIds(operation: CanvasOperation): string[] {
+  if (operation.type === "group" && operation.groupId) return [operation.groupId];
+  if (!("id" in operation) || typeof operation.id !== "string") return [];
+  return ["create_note", "create_frame", "create_table", "create_icon"].includes(operation.type) ? [operation.id] : [];
+}
+
+/** Existing ids an operation reads or mutates. A missing target makes the operation a silent no-op. */
+export function operationTargetIds(operation: CanvasOperation): string[] {
+  const targets: string[] = [];
+  if ("ids" in operation && Array.isArray(operation.ids)) targets.push(...operation.ids);
+  if (["resize", "update_text", "update_points", "update_artboard"].includes(operation.type) && "id" in operation && typeof operation.id === "string") targets.push(operation.id);
+  if (operation.type === "connect") targets.push(operation.fromId, operation.toId);
+  if (operation.type === "set_parent" && operation.parentId) targets.push(operation.parentId);
+  if (operation.type === "ungroup" && operation.groupId) targets.push(operation.groupId);
+  if (operation.type.startsWith("create_") && "parentId" in operation && typeof operation.parentId === "string") targets.push(operation.parentId);
+  return targets;
+}
+
+export type PreflightResult = { ok: true } | { ok: false; error: "id_conflict" | "missing_target"; ids: string[]; instruction: string };
+
+/**
+ * Validates a whole batch before a single operation runs: no id collisions with the board or
+ * within the batch, and every mutation target actually resolves (including objects created
+ * earlier in the same batch).
+ */
+export function preflightOperations(operations: CanvasOperation[], existingElementIds: Iterable<string>, existingGroupIds: Iterable<string> = []): PreflightResult {
+  const elementIds = new Set(existingElementIds);
+  const groupIds = new Set(existingGroupIds);
+  const conflicts: string[] = [];
+  const missing: string[] = [];
+  for (const operation of operations) {
+    for (const target of operationTargetIds(operation)) if (!elementIds.has(target) && !groupIds.has(target) && !missing.includes(target)) missing.push(target);
+    for (const created of plannedElementIds(operation)) {
+      if (elementIds.has(created)) { if (!conflicts.includes(created)) conflicts.push(created); }
+      else elementIds.add(created);
+    }
+    for (const group of plannedGroupIds(operation)) groupIds.add(group);
+    if (operation.type === "delete") for (const removed of operation.ids) elementIds.delete(removed);
+  }
+  if (conflicts.length) return { ok: false, error: "id_conflict", ids: conflicts.slice(0, 12), instruction: "These ids already exist on the board or repeat inside the batch. Use fresh ids; nothing was applied." };
+  if (missing.length) return { ok: false, error: "missing_target", ids: missing.slice(0, 12), instruction: "These target ids do not exist on the board. Inspect the whiteboard again; nothing was applied." };
+  return { ok: true };
 }

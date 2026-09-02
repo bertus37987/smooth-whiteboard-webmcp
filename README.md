@@ -42,6 +42,29 @@ The app registers eight tools through `document.modelContext`:
 
 The board state—not an agent's previous output—is always the source of truth. Agent-created items are normal canvas items, so the human can move, resize, rewrite or remove them before the next inspection.
 
+### Turn protocol
+
+```
+idle → waiting → queued → claimed → planning → working → review → complete | cancelled → waiting
+```
+
+Every tool answer carries the same capability block, so the model never has to infer what it may do:
+
+```json
+{ "state": "waiting", "canWrite": false, "hasLease": false, "nextAction": "wait_for_human_turn" }
+{ "state": "claimed", "canWrite": true,  "hasLease": true, "leaseToken": "…", "nextAction": "inspect_whiteboard" }
+{ "state": "review",  "canWrite": false, "awaitingHumanDecision": true, "nextAction": "wait_for_human_decision" }
+```
+
+Rules the runtime enforces, not just the prose:
+
+- Writing requires an active turn **and** that turn's `leaseToken`; the four write tools and `focus_whiteboard_region` require it in their schema too. The lease dies when the turn reaches review, accept, reject or a page reload.
+- Each human submit freezes its own context: prompt, selection, AI-pen gesture (resolved to the elements it points at), attachments, recent human edits and the regions the human deleted. Live selection changes after Send do not leak into the running turn.
+- A batch is validated as a whole. An id collision — including the concrete ids composites such as notes, frames and tables generate — or a target that does not exist applies zero operations.
+- Streamed operations revalidate turn, lease, status and the WebMCP `AbortSignal` before each step; a cancelled execution rolls the whole proposal back.
+- Accept / Reject only appear in `review`; while the agent writes, human board mutations are locked by one central rule instead of per-handler checks.
+- Session bookkeeping (claim, plan, status, lease) never bumps the canvas revision, so `baseRevision` only becomes stale when the visible board really changed.
+
 ## Run the web app
 
 ```bash
@@ -75,6 +98,7 @@ The earlier Obsidian plugin can still be built with `npm run build`. It keeps ve
 - `web-src/compositions.ts`: high-level editable visual composers
 - `web-src/store.ts`: revisioned state, persistence, history and agent rollback
 - `web-src/renderer.ts`: infinite-canvas renderer, camera, selection and lasso
+- `web-src/collaboration.ts`: turn state machine, lease, agent proposal transaction and human mutation ledger
 - `web-src/app.ts`: human interactions and collaboration UI
 - `web-src/webmcp.ts`: small WebMCP capability surface
 - `src/main.ts`, `src/pdf-annotation.ts`: optional Obsidian adapter
