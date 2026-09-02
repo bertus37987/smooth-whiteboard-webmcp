@@ -96,7 +96,7 @@ export class WhiteboardApp {
       complete: (summary, lease) => this.collaboration.complete(summary, lease)
     }, this.abort.signal)
       .then((available) => { this.agentAvailable = available; this.setStatus(available ? "WebMCP ready" : "Browser without WebMCP – drawing remains available", 2600); })
-      .catch(() => this.setStatus("WebMCP konnte nicht registriert werden", 2600));
+      .catch(() => this.setStatus("WebMCP tools could not be registered", 2600));
   }
 
   private bindToolbar(): void {
