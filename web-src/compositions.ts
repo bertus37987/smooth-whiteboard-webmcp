@@ -149,13 +149,67 @@ function titleOperations(prefix: string, title: string | undefined, x: number, y
   return title ? [{ type: "create_text", id: `${prefix}-title`, x, y, width, fontSize: typeScale.title.fontSize, color: palette.ink, text: title, fontWeight: typeScale.title.fontWeight, blockStyle: "heading-1", renderStyle: "sketch" }] : [];
 }
 
+/**
+ * Depth of every node along the edges, so a flow can be laid out in the order it actually runs
+ * instead of a square grid. Cycles are bounded by visiting each node once.
+ */
+function layerNodes(nodes: VisualNodeInput[], edges: VisualEdgeInput[]): Map<string, number> {
+  const depth = new Map(nodes.map((node) => [node.id, 0]));
+  const incoming = new Map(nodes.map((node) => [node.id, 0]));
+  for (const edge of edges) if (incoming.has(edge.toId)) incoming.set(edge.toId, (incoming.get(edge.toId) ?? 0) + 1);
+  const roots = nodes.filter((node) => (incoming.get(node.id) ?? 0) === 0).map((node) => node.id);
+  const queue = roots.length ? [...roots] : [nodes[0].id];
+  const seen = new Set(queue);
+  while (queue.length) {
+    const id = queue.shift()!;
+    for (const edge of edges.filter((candidate) => candidate.fromId === id && depth.has(candidate.toId))) {
+      // First visit wins: a back edge must not drag its target to the end of the flow.
+      if (seen.has(edge.toId)) continue;
+      depth.set(edge.toId, (depth.get(id) ?? 0) + 1); seen.add(edge.toId); queue.push(edge.toId);
+    }
+  }
+  return depth;
+}
+
 function flowchart(input: VisualCompositionInput, prefix: string): CanvasOperation[] {
-  const nodes = input.nodes ?? []; const x = input.x ?? -420; const y = input.y ?? -260; const width = input.width ?? 900; const columns = Math.max(1, Math.min(4, Math.ceil(Math.sqrt(nodes.length || 1)))); const cardWidth = Math.min(220, (width - (columns - 1) * 90) / columns);
-  const heights = gridRowHeights(nodes, columns, (node) => node.width ?? cardWidth, 96);
-  const operations = titleOperations(prefix, input.title, x, y - Math.max(70, titleBlockHeight(input.title, width) + spacing.lg), width); const nodeIds = new Map<string, string>();
-  nodes.forEach((node, index) => { const row = Math.floor(index / columns); const px = node.x ?? x + (index % columns) * (cardWidth + 90); const py = node.y ?? y + rowOffset(heights, row, 82); const w = node.width ?? Math.max(cardWidth, cardMinimumWidth(node)); const h = node.height ?? heights[row]; operations.push(...cardOperations(prefix, node, px, py, w, h, node.role === "decision", node.role === "decision" ? palette.info : undefined)); nodeIds.set(node.id, idsFor(prefix, node).shape); });
+  const nodes = input.nodes ?? [];
+  const x = input.x ?? -420; const y = input.y ?? -260;
+  if (!nodes.length) return titleOperations(prefix, input.title, x, y - 70, input.width ?? 900);
   const edges: VisualEdgeInput[] = input.edges ?? nodes.filter((node) => node.parentId).map((node) => ({ fromId: node.parentId!, toId: node.id }));
-  for (const [index, edge] of edges.entries()) { const fromId = nodeIds.get(edge.fromId); const toId = nodeIds.get(edge.toId); if (fromId && toId) operations.push({ type: "connect", id: `${prefix}-edge-${index}`, fromId, toId, label: edge.label, color: palette.ink, strokeWidth: 2.5, route: "orthogonal" }); }
+  const depth = layerNodes(nodes, edges);
+  const columns: VisualNodeInput[][] = [];
+  for (const node of nodes) { const column = depth.get(node.id) ?? 0; (columns[column] ??= []).push(node); }
+  const filled = columns.filter(Boolean);
+
+  const columnGap = 120; const rowGap = spacing.xl;
+  const sizes = filled.map((column) => column.map((node) => ({
+    node,
+    width: node.width ?? Math.max(200, cardMinimumWidth(node)),
+    height: node.height ?? cardHeight(node, node.width ?? Math.max(200, cardMinimumWidth(node)), 96)
+  })));
+  const columnWidths = sizes.map((column) => Math.max(...column.map((entry) => entry.width)));
+  const columnHeights = sizes.map((column) => column.reduce((total, entry) => total + entry.height + rowGap, -rowGap));
+  const tallest = Math.max(...columnHeights);
+
+  const operations = titleOperations(prefix, input.title, x, y - Math.max(70, titleBlockHeight(input.title, input.width ?? 900) + spacing.lg), input.width ?? 900);
+  const nodeIds = new Map<string, string>();
+  let cursorX = x;
+  sizes.forEach((column, columnIndex) => {
+    // Each column is centred against the tallest one, so a flow reads along a spine.
+    let cursorY = y + (tallest - columnHeights[columnIndex]) / 2;
+    for (const entry of column) {
+      const px = entry.node.x ?? cursorX + (columnWidths[columnIndex] - entry.width) / 2;
+      const py = entry.node.y ?? cursorY;
+      operations.push(...cardOperations(prefix, entry.node, px, py, entry.width, entry.height, entry.node.role === "decision", entry.node.role === "decision" ? palette.info : undefined));
+      nodeIds.set(entry.node.id, idsFor(prefix, entry.node).shape);
+      cursorY += entry.height + rowGap;
+    }
+    cursorX += columnWidths[columnIndex] + columnGap;
+  });
+  for (const [index, edge] of edges.entries()) {
+    const fromId = nodeIds.get(edge.fromId); const toId = nodeIds.get(edge.toId);
+    if (fromId && toId) operations.push({ type: "connect", id: `${prefix}-edge-${index}`, fromId, toId, label: edge.label, color: palette.ink, strokeWidth: 2.5, route: "orthogonal" });
+  }
   return operations;
 }
 

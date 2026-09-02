@@ -508,19 +508,25 @@ export function routeBlocked(points: InkPoint[], obstacles: Bounds[]): boolean {
   return false;
 }
 
-export function connectionRoute(from: PageElement, to: PageElement, route: ConnectorRoute = "straight", obstacles: Bounds[] = []): InkPoint[] {
+/** Where a connector attaches and which corridor it runs in, so parallel edges stay apart. */
+export interface ConnectorLanes { from?: number; to?: number; corridor?: number }
+
+export function connectionRoute(from: PageElement, to: PageElement, route: ConnectorRoute = "straight", obstacles: Bounds[] = [], lanes: number | ConnectorLanes = 0): InkPoint[] {
+  const lane = typeof lanes === "number" ? { corridor: lanes, from: 0, to: 0 } : { corridor: lanes.corridor ?? 0, from: lanes.from ?? 0, to: lanes.to ?? 0 };
   const anchors = connectionPoints(from, to);
   if (route === "straight") return [anchors.from, anchors.to];
+
   const a = elementBounds(from); const b = elementBounds(to);
   const horizontal = Math.abs((b.minX + b.maxX) / 2 - (a.minX + a.maxX) / 2) >= Math.abs((b.minY + b.maxY) / 2 - (a.minY + a.maxY) / 2);
-  const start = sideAnchor(a, horizontal, horizontal ? (b.minX + b.maxX) / 2 > (a.minX + a.maxX) / 2 : (b.minY + b.maxY) / 2 > (a.minY + a.maxY) / 2);
-  const end = sideAnchor(b, horizontal, horizontal ? (a.minX + a.maxX) / 2 > (b.minX + b.maxX) / 2 : (a.minY + a.maxY) / 2 > (b.minY + b.maxY) / 2);
+  const start = sideAnchor(a, horizontal, horizontal ? (b.minX + b.maxX) / 2 > (a.minX + a.maxX) / 2 : (b.minY + b.maxY) / 2 > (a.minY + a.maxY) / 2, lane.from * LANE_GAP);
+  const end = sideAnchor(b, horizontal, horizontal ? (a.minX + a.maxX) / 2 > (b.minX + b.maxX) / 2 : (a.minY + a.maxY) / 2 > (b.minY + b.maxY) / 2, lane.to * LANE_GAP);
   if (route === "orthogonal") {
     // Two ways to turn a corner: meet on a shared x, or meet on a shared y.
     const build = (alongX: boolean, middle: number): InkPoint[] => alongX
       ? [start, { x: middle, y: start.y, pressure: .5 }, { x: middle, y: end.y, pressure: .5 }, end]
       : [start, { x: start.x, y: middle, pressure: .5 }, { x: end.x, y: middle, pressure: .5 }, end];
-    const direct = build(horizontal, horizontal ? (start.x + end.x) / 2 : (start.y + end.y) / 2);
+    const centre = (horizontal ? (start.x + end.x) / 2 : (start.y + end.y) / 2) + lane.corridor * LANE_GAP;
+    const direct = build(horizontal, centre);
     if (!obstacles.length || !routeBlocked(direct, obstacles)) return direct;
     const margin = 28;
     const nearest = (values: number[], from: number): number[] => [...values].sort((left, right) => Math.abs(left - from) - Math.abs(right - from));
@@ -538,7 +544,7 @@ export function connectionRoute(from: PageElement, to: PageElement, route: Conne
       return { x: inverse * inverse * start.x + 2 * inverse * t * control.x + t * t * end.x, y: inverse * inverse * start.y + 2 * inverse * t * control.y + t * t * end.y, pressure: .5 };
     });
   };
-  const bow = Math.min(90, length * .18);
+  const bow = Math.min(90, length * .18) * (1 + Math.abs(lane.corridor) * .45) * (lane.corridor < 0 ? -1 : 1);
   const curved = sample(bow);
   if (!routeBlocked(curved, obstacles)) return curved;
   // Try the other side, then a wider arc, before giving up on avoiding the obstacle.
@@ -546,9 +552,14 @@ export function connectionRoute(from: PageElement, to: PageElement, route: Conne
   return curved;
 }
 
-function sideAnchor(box: Bounds, horizontal: boolean, positive: boolean): InkPoint {
-  if (horizontal) return { x: positive ? box.maxX : box.minX, y: (box.minY + box.maxY) / 2, pressure: .5 };
-  return { x: (box.minX + box.maxX) / 2, y: positive ? box.maxY : box.minY, pressure: .5 };
+/** Distance between two connectors that would otherwise share the same corridor. */
+export const LANE_GAP = 24;
+
+/** Attachment point on one side of a box, slid along that side by the lane offset. */
+function sideAnchor(box: Bounds, horizontal: boolean, positive: boolean, offset = 0): InkPoint {
+  const slide = (value: number, min: number, max: number): number => Math.max(min + 8, Math.min(max - 8, value + offset));
+  if (horizontal) return { x: positive ? box.maxX : box.minX, y: slide((box.minY + box.maxY) / 2, box.minY, box.maxY), pressure: .5 };
+  return { x: slide((box.minX + box.maxX) / 2, box.minX, box.maxX), y: positive ? box.maxY : box.minY, pressure: .5 };
 }
 
 export function connectionPoints(from: PageElement, to: PageElement): { from: InkPoint; to: InkPoint } {

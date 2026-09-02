@@ -293,6 +293,43 @@ async function main(): Promise<void> {
     assert.ok(arrow.type === "shape" && arrow.points.length >= 2);
   }
 
+  /* Connectors sharing a corridor run in their own lanes, labels and all. */
+  {
+    const store = boardFrom([box("a", 0, 0, 200, 120), box("b", 600, 0, 200, 120)]);
+    store.applyOperation({ type: "connect", id: "there", fromId: "a", toId: "b", label: "there", route: "orthogonal" }, "agent");
+    store.applyOperation({ type: "connect", id: "back", fromId: "b", toId: "a", label: "back", route: "orthogonal" }, "agent");
+    store.changed();
+    const [there, back] = ["there", "back"].map((id) => store.document.elements.find((element) => element.id === id)!);
+    assert.ok(there.type === "shape" && back.type === "shape");
+    if (there.type === "shape" && back.type === "shape") {
+      assert.notEqual(there.points[0].y, back.points.at(-1)!.y, "two connectors between the same pair leave from different points");
+    }
+    const labels = ["there", "back"].map((text) => elementBounds(store.document.elements.find((element) => element.type === "text" && element.text === text)!));
+    assert.equal(boundsOverlapArea(labels[0], labels[1]), 0, "and their labels do not stack on each other");
+  }
+
+  /* A flow is laid out along its own edges, and a loop back does not reorder it. */
+  {
+    const composed = composeVisual({ kind: "flowchart", id: "flow", title: "Deployment",
+      nodes: [{ id: "commit", label: "Commit" }, { id: "ci", label: "CI build" }, { id: "tests", label: "Tests", role: "decision" }, { id: "ship", label: "Ship" }],
+      edges: [{ fromId: "commit", toId: "ci" }, { fromId: "ci", toId: "tests" }, { fromId: "tests", toId: "ship", label: "pass" }, { fromId: "tests", toId: "commit", label: "fail" }] });
+    const store = boardFrom(composed);
+    const columnOf = (id: string): number => elementBounds(store.document.elements.find((element) => element.id === `flow-${id}`)!).minX;
+    assert.ok(columnOf("commit") < columnOf("ci"), "the flow starts where the edges start");
+    assert.ok(columnOf("ci") < columnOf("tests") && columnOf("tests") < columnOf("ship"), "and follows them in order");
+    assert.deepEqual(lintBoard(store.document).filter((issue) => issue.code === "overlap"), [], "the layered flow has nothing on top of anything else");
+  }
+
+  /* Leaving the walkthrough is reachable and shows the whole board again. */
+  {
+    const app = readFileSync("web-src/app.ts", "utf8");
+    assert.ok(app.includes("exitPresentation"), "there is one way out of the walkthrough");
+    assert.ok(/exitPresentation\(\): void \{[^}]*fitAll\(\)/s.test(app), "and it frames the whole board on the way out");
+    assert.ok(app.includes('event.key === "Escape" && this.store.document.presentation'), "Escape leaves the walkthrough");
+    assert.ok(app.includes('event.key === "ArrowRight" && this.store.document.presentation'), "the arrow keys step through it");
+    assert.ok(readFileSync("web/index.html", "utf8").includes("Show the whole board · Esc"), "and the button says so");
+  }
+
   /* ------------------------- bundled fonts ------------------------- */
 
   {

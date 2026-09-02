@@ -433,6 +433,9 @@ export class WhiteboardApp {
     window.addEventListener("keydown", (event) => {
       const editing = event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement;
       if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); this.submitHumanTurn(); return; } if (editing) return;
+      if (event.key === "Escape" && this.store.document.presentation) { event.preventDefault(); this.exitPresentation(); return; }
+      if (event.key === "ArrowRight" && this.store.document.presentation) { event.preventDefault(); this.stepExplanation(1); return; }
+      if (event.key === "ArrowLeft" && this.store.document.presentation) { event.preventDefault(); this.stepExplanation(-1); return; }
       if (event.code === "Space") { event.preventDefault(); this.spaceDown = true; this.canvas.classList.add("is-panning"); }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") { event.preventDefault(); event.shiftKey ? this.humanRedo() : this.humanUndo(); }
       if ((event.key === "Delete" || event.key === "Backspace") && this.renderer.selectionIds.size) { event.preventDefault(); this.deleteSelection(); }
@@ -482,7 +485,7 @@ export class WhiteboardApp {
 
   private bindExplanationControls(): void {
     byId<HTMLButtonElement>("explanation-prev").addEventListener("click", () => this.stepExplanation(-1)); byId<HTMLButtonElement>("explanation-next").addEventListener("click", () => this.stepExplanation(1));
-    byId<HTMLButtonElement>("explanation-overview").addEventListener("click", () => { this.store.document.presentation = null; this.store.changed("metadata"); });
+    byId<HTMLButtonElement>("explanation-overview").addEventListener("click", () => this.exitPresentation());
     this.syncExplanation();
   }
 
@@ -491,6 +494,16 @@ export class WhiteboardApp {
     const current = this.activeExplanation; const sequence = current?.sequence ?? this.store.document.explanationSequences[0]; if (!sequence?.steps.length) return;
     const index = current ? Math.max(0, Math.min(sequence.steps.length - 1, current.index + delta)) : delta < 0 ? sequence.steps.length - 1 : 0;
     this.store.document.presentation = { sequenceId: sequence.id, index }; this.store.changed("metadata");
+  }
+
+  /** Leave the guided walkthrough and show everything again, framed. */
+  private exitPresentation(): void {
+    if (!this.store.document.presentation) return;
+    this.store.document.presentation = null;
+    this.store.changed("metadata");
+    this.renderer.fitAll();
+    this.updateZoom(); this.updateContextPrompt(); this.renderer.request();
+    this.setStatus("Whole board", 1600);
   }
 
   private syncExplanation(): void {
@@ -511,6 +524,7 @@ export class WhiteboardApp {
     const active = this.activeExplanation; const sequence = active?.sequence ?? this.store.document.explanationSequences[0]; this.explanationControls.hidden = !sequence; if (!sequence) return;
     const step = active ? sequence.steps[active.index] : null;
     byId<HTMLElement>("explanation-title").textContent = step ? `${active!.index + 1}/${sequence.steps.length} · ${step.title}` : `${sequence.title} · Overview`;
+    byId<HTMLButtonElement>("explanation-overview").textContent = step ? "Exit" : "Overview";
     const body = byId<HTMLElement>("explanation-body"); body.textContent = step?.body ?? ""; body.hidden = !step?.body;
   }
 

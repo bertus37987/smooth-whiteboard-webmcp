@@ -1,7 +1,7 @@
 import { PageElement, elementBounds } from "../src/document";
 import { beautifyStroke } from "../src/strokes";
 import { measureTextBlock } from "./measure";
-import { Bounds, CanvasOperation, ConnectorRoute, WhiteboardDocument, boardBounds, cloneBoard, connectionRoute, elementSignature, emptyBoard, estimateTextHeight, iconSegments, migrateBoard, operationElement, polygonShapePoints, scaleElement, translateElement } from "./model";
+import { Bounds, CanvasOperation, ConnectorLanes, ConnectorRoute, WhiteboardDocument, boardBounds, cloneBoard, connectionRoute, elementSignature, emptyBoard, estimateTextHeight, iconSegments, migrateBoard, operationElement, polygonShapePoints, scaleElement, translateElement } from "./model";
 
 const STORAGE_KEY = "smooth-whiteboard-v3";
 const LEGACY_STORAGE_KEY = "smooth-whiteboard-v1";
@@ -355,8 +355,46 @@ export class BoardStore extends EventTarget {
     return created;
   }
 
+  /**
+   * Connectors that would run down the same corridor are spread across parallel lanes, so two
+   * arrows between the same pair of boxes never sit on top of each other with their labels stacked.
+   */
+  private connectorLanes(connections: Record<string, { fromId: string; toId: string; route?: ConnectorRoute }>): Map<string, ConnectorLanes> {
+    const corridors = new Map<string, string[]>();
+    const sides = new Map<string, Array<{ arrowId: string; end: "from" | "to" }>>();
+    for (const [arrowId, connection] of Object.entries(connections)) {
+      if ((connection.route ?? "straight") === "straight") continue;
+      const from = this.document.elements.find((element) => element.id === connection.fromId);
+      const to = this.document.elements.find((element) => element.id === connection.toId);
+      if (!from || !to) continue;
+      const a = elementBounds(from); const b = elementBounds(to);
+      const horizontal = Math.abs((b.minX + b.maxX) / 2 - (a.minX + a.maxX) / 2) >= Math.abs((b.minY + b.maxY) / 2 - (a.minY + a.maxY) / 2);
+      const middle = horizontal ? ((a.minX + a.maxX) / 2 + (b.minX + b.maxX) / 2) / 2 : ((a.minY + a.maxY) / 2 + (b.minY + b.maxY) / 2) / 2;
+      corridors.set(`${horizontal ? "h" : "v"}:${Math.round(middle / 60)}`, [...(corridors.get(`${horizontal ? "h" : "v"}:${Math.round(middle / 60)}`) ?? []), arrowId]);
+      // Which side of which box each end leaves from: everything meeting there has to share it.
+      const fromSide = horizontal ? ((b.minX + b.maxX) / 2 > (a.minX + a.maxX) / 2 ? "e" : "w") : ((b.minY + b.maxY) / 2 > (a.minY + a.maxY) / 2 ? "s" : "n");
+      const toSide = horizontal ? ((a.minX + a.maxX) / 2 > (b.minX + b.maxX) / 2 ? "e" : "w") : ((a.minY + a.maxY) / 2 > (b.minY + b.maxY) / 2 ? "s" : "n");
+      const push = (key: string, end: "from" | "to"): void => { sides.set(key, [...(sides.get(key) ?? []), { arrowId, end }]); };
+      push(`${connection.fromId}:${fromSide}`, "from");
+      push(`${connection.toId}:${toSide}`, "to");
+    }
+    const lanes = new Map<string, ConnectorLanes>();
+    const set = (arrowId: string, patch: ConnectorLanes): void => { lanes.set(arrowId, { ...lanes.get(arrowId), ...patch }); };
+    for (const shared of corridors.values()) {
+      const sorted = [...shared].sort();
+      sorted.forEach((arrowId, index) => set(arrowId, { corridor: index - (sorted.length - 1) / 2 }));
+    }
+    for (const attached of sides.values()) {
+      const sorted = [...attached].sort((left, right) => left.arrowId.localeCompare(right.arrowId));
+      sorted.forEach((entry, index) => set(entry.arrowId, { [entry.end]: index - (sorted.length - 1) / 2 }));
+    }
+    return lanes;
+  }
+
   private refreshConnections(): void {
     const connections = this.document.connections ??= {};
+    const lanes = this.connectorLanes(connections);
+    const placedLabels: Bounds[] = [];
     for (const [arrowId, connection] of Object.entries(connections)) {
       const from = this.document.elements.find((element) => element.id === connection.fromId);
       const to = this.document.elements.find((element) => element.id === connection.toId);
@@ -368,7 +406,8 @@ export class BoardStore extends EventTarget {
         delete connections[arrowId]; continue;
       }
       const blockers = this.document.elements.filter((element) => element.id !== arrowId && element.id !== from.id && element.id !== to.id && element.id !== connection.labelId && element.type !== "text" && !(element.type === "shape" && (element.kind === "arrow" || element.kind === "line")) && !element.artboard).map((element) => elementBounds(element));
-      const route = connectionRoute(from, to, connection.route ?? "straight", blockers); arrow.points = route;
+      const route = connectionRoute(from, to, connection.route ?? "straight", blockers, lanes.get(arrowId) ?? 0); arrow.points = route;
+      // Labels placed earlier in this pass are obstacles too, so two of them never stack up.
       if (connection.labelId) {
         const label = this.document.elements.find((element) => element.id === connection.labelId);
         if (label?.type === "text") {
@@ -393,11 +432,11 @@ export class BoardStore extends EventTarget {
             place(.28, preferred, base), place(.72, preferred, base),
             place(.5, preferred, base + height), place(.5, -preferred, base + height)
           ];
-          const clear = candidates.find((candidate) => {
-            const box = { minX: candidate.x, minY: candidate.baseline - label.fontSize, maxX: candidate.x + label.width, maxY: candidate.baseline - label.fontSize + height };
-            return !blockers.some((blocker) => box.minX < blocker.maxX && box.maxX > blocker.minX && box.minY < blocker.maxY && box.maxY > blocker.minY);
-          }) ?? candidates[0];
+          const boxOf = (candidate: { x: number; baseline: number }): Bounds => ({ minX: candidate.x, minY: candidate.baseline - label.fontSize, maxX: candidate.x + label.width, maxY: candidate.baseline - label.fontSize + height });
+          const hits = (box: Bounds, others: Bounds[]): boolean => others.some((other) => box.minX < other.maxX && box.maxX > other.minX && box.minY < other.maxY && box.maxY > other.minY);
+          const clear = candidates.find((candidate) => !hits(boxOf(candidate), [...blockers, ...placedLabels])) ?? candidates[0];
           label.x = clear.x; label.baseline = clear.baseline;
+          placedLabels.push(boxOf(clear));
         }
       }
     }
