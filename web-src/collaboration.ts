@@ -6,7 +6,7 @@ import { spacing } from "./theme";
 import {
   Bounds, CanvasOperation, CollaborationTurn, ContextScope, DeletedRegion, PriorityRegion, SessionState, TurnCapabilities,
   boardBounds, boundsForPoints, boundsIntersect, elementSummary, isCanvasOperation, lintBoard, operationTargetIds,
-  plannedBounds, plannedElementIds, preflightOperations, resolveGestureElements
+  iconNames, plannedBounds, plannedElementIds, preflightOperations, resolveGestureElements
 } from "./model";
 import { OccupiedUnit, freeRegions, occupancyMap, placeFor } from "./occupancy";
 import { compositionBounds, translateComposition } from "./layout";
@@ -355,6 +355,7 @@ export class CollaborationSession {
       ...this.spatialMap(needed),
       settings: this.store.document.settings,
       artboardIds: this.store.document.artboardIds,
+      symbols: Object.keys(this.store.document.symbols ?? {}),
       explanationSequences: this.store.document.explanationSequences,
       lintIssues: lintBoard(this.store.document),
       designSystem,
@@ -427,8 +428,10 @@ export class CollaborationSession {
     if (baseRevision !== undefined && baseRevision !== this.store.contentRevision()) {
       return this.respond({ ok: false, error: "stale_revision", currentRevision: this.store.contentRevision(), instruction: "The canvas changed since you inspected it. Inspect the whiteboard again before editing." });
     }
-    const preflight = preflightOperations(operations, this.store.document.elements.map((element) => element.id), Object.keys(this.store.document.groups ?? {}));
+    const preflight = preflightOperations(operations, this.store.document.elements.map((element) => element.id), Object.keys(this.store.document.groups ?? {}), this.store.document.symbols);
     if (!preflight.ok) return this.respond({ ok: false, error: preflight.error, ids: preflight.ids, appliedOperations: 0, instruction: preflight.instruction });
+    const unknown = this.unknownSymbols(operations);
+    if (unknown) return unknown;
     const collision = this.collisionPreflight(operations);
     if (collision) return collision;
 
@@ -463,6 +466,21 @@ export class CollaborationSession {
     const touched = new Set([...createdIds, ...turn.pendingChangeIds]);
     const lintIssues = lintBoard(this.store.document).filter((issue) => issue.elementIds.some((id) => touched.has(id)));
     return this.respond({ ok: true, appliedOperations: applied, createdIds, lintIssues, instruction: lintIssues.length ? "Changes are visible but lintIssues reports problems with what you just drew. Fix them in this turn, then call complete_whiteboard_contribution with the same leaseToken." : "Changes are visible and editable but still a proposal. Call complete_whiteboard_contribution with the same leaseToken." });
+  }
+
+  /**
+   * A symbol name nobody has defined would silently draw a placeholder, so the batch is refused and
+   * the agent is told what it can actually stamp.
+   */
+  private unknownSymbols(operations: CanvasOperation[]): AgentResponse | null {
+    const defined = new Set<string>([...iconNames, ...Object.keys(this.store.document.symbols ?? {})]);
+    for (const operation of operations) if (operation.type === "define_symbol") defined.add(operation.name);
+    const missing = unique(operations.flatMap((operation) => operation.type === "create_icon" && !operation.d && operation.name && !defined.has(operation.name) ? [operation.name] : []));
+    if (!missing.length) return null;
+    return this.respond({
+      ok: false, error: "unknown_symbol", appliedOperations: 0, names: missing, availableSymbols: [...defined],
+      instruction: "Nothing was applied: no symbol answers to these names. Use one from availableSymbols, or draw your own first with define_symbol { name, d } and then stamp it as often as you like."
+    });
   }
 
   /**
@@ -519,7 +537,7 @@ export class CollaborationSession {
   async compose(input: VisualCompositionInput, baseRevision?: number, leaseToken?: string, signal?: AbortSignal): Promise<AgentResponse> {
     const denied = this.requireWritable(leaseToken); if (denied) return denied;
     if (!isVisualComposition(input)) return this.respond({ ok: false, error: "invalid_visual", instruction: "Use one supported visual kind and provide valid nodes, sections, steps, axes or series." });
-    const composed = composeVisualDetailed(input);
+    const composed = composeVisualDetailed(input, this.store.agentStyle());
     const { operations, repairs } = this.placeComposition(input, composed.operations, composed.repairs);
     if (!operations.length) return this.respond({ ok: false, error: "empty_visual", instruction: "The visual produced no canvas content. Provide nodes, sections, steps or series." });
     const applied = await this.apply(operations, baseRevision, leaseToken, signal, 240);

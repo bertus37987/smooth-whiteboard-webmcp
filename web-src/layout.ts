@@ -54,8 +54,8 @@ export function laneLayout(input: LaneLayoutInput): LaneLayout {
 }
 
 /** Width a lane header needs for its own title, so a column is never narrower than its name. */
-export function headerWidth(label: string, minimum = 180): number {
-  const measured = measureTextBlock({ text: label, width: 10000, fontSize: typeScale.subheading.fontSize, fontWeight: typeScale.subheading.fontWeight, fontFamily: "handwriting" });
+export function headerWidth(label: string, minimum = 180, fontFamily: "sans" | "handwriting" = "handwriting"): number {
+  const measured = measureTextBlock({ text: label, width: 10000, fontSize: typeScale.subheading.fontSize, fontWeight: typeScale.subheading.fontWeight, fontFamily });
   return Math.max(minimum, Math.ceil(measured.longestLine + spacing.lg * 2));
 }
 

@@ -76,8 +76,22 @@ function idsFor(prefix: string, node: VisualNodeInput): { shape: string; text: s
 }
 
 const CARD_PADDING = spacing.md;
-/** Composed text is applied by the agent, and the store renders agent text in the handwriting face: measure that face. */
-const AGENT_FONT = "handwriting" as const;
+/** How the agent's work is drawn: plain type and straight lines, or the hand-drawn look. */
+export interface AgentStyle { fontFamily: "sans" | "handwriting"; renderStyle: "clean" | "sketch" }
+const HAND_DRAWN: AgentStyle = { fontFamily: "handwriting", renderStyle: "sketch" };
+
+/**
+ * Module state, on purpose: every measurement helper below needs the face that will actually render,
+ * and threading it through a dozen signatures would say nothing the name does not already say.
+ * Only withAgentStyle sets it, and it always puts the previous value back.
+ */
+let active: AgentStyle = HAND_DRAWN;
+const agentFont = (): AgentStyle["fontFamily"] => active.fontFamily;
+const agentRender = (): AgentStyle["renderStyle"] => active.renderStyle;
+function withAgentStyle<T>(style: AgentStyle | undefined, run: () => T): T {
+  const previous = active; active = style ?? HAND_DRAWN;
+  try { return run(); } finally { active = previous; }
+}
 
 const cardText = (node: VisualNodeInput): string => node.detail ? `${node.label}\n${node.detail}` : node.label;
 const cardFontSize = (node: VisualNodeInput): number => node.detail ? typeScale.detail.fontSize : typeScale.body.fontSize;
@@ -85,13 +99,13 @@ const cardTextWidth = (width: number): number => Math.max(60, width - CARD_PADDI
 
 /** How tall a card has to be for its own text — measured with the renderer's font, not guessed. */
 export function cardHeight(node: VisualNodeInput, width: number, minimum = 96): number {
-  const measured = measureTextBlock({ text: cardText(node), width: cardTextWidth(width), fontSize: cardFontSize(node), fontFamily: AGENT_FONT });
+  const measured = measureTextBlock({ text: cardText(node), width: cardTextWidth(width), fontSize: cardFontSize(node), fontFamily: agentFont() });
   return Math.max(minimum, Math.round(measured.height + CARD_PADDING * 2));
 }
 
 /** Narrowest a card may be before an unbreakable word spills out of it. */
 export function cardMinimumWidth(node: VisualNodeInput): number {
-  const measured = measureTextBlock({ text: cardText(node), width: 10000, fontSize: cardFontSize(node), fontFamily: AGENT_FONT });
+  const measured = measureTextBlock({ text: cardText(node), width: 10000, fontSize: cardFontSize(node), fontFamily: agentFont() });
   return Math.ceil(measured.longestWord + CARD_PADDING * 2);
 }
 
@@ -124,14 +138,14 @@ const rowOffset = (heights: number[], row: number, gap: number): number => heigh
 
 /** Height a sticky note needs for its text, matching the padding the store gives note bodies. */
 function noteHeight(text: string, width: number, blockStyle?: TextBlock["blockStyle"], minimum = 90): number {
-  return Math.max(minimum, Math.round(measureTextBlock({ text, width: Math.max(84, width - 36), fontSize: 24, blockStyle, fontFamily: AGENT_FONT }).height + 36));
+  return Math.max(minimum, Math.round(measureTextBlock({ text, width: Math.max(84, width - 36), fontSize: 24, blockStyle, fontFamily: agentFont() }).height + 36));
 }
 
 function cardOperations(prefix: string, node: VisualNodeInput, x: number, y: number, width: number, height: number, ellipse = false, accent?: string): CanvasOperation[] {
   const ids = idsFor(prefix, node); const text = cardText(node); const fontSize = cardFontSize(node);
   const emphasized = node.role === "primary" || node.role === "button";
   const textWidth = cardTextWidth(width);
-  const measured = measureTextBlock({ text, width: textWidth, fontSize, fontFamily: AGENT_FONT });
+  const measured = measureTextBlock({ text, width: textWidth, fontSize, fontFamily: agentFont() });
   const boxHeight = Math.max(height, Math.round(measured.height + CARD_PADDING * 2));
   return [
     { type: "create_shape", id: ids.shape, kind: ellipse ? "ellipse" : "rectangle", x, y, width, height: boxHeight, color: accent ?? palette.ink, strokeWidth: emphasized ? 4 : 2.5, fillColor: accent ? accentTints[accents.indexOf(accent as typeof accents[number])] ?? palette.surface : emphasized ? palette.hairline : palette.surface, fillOpacity: accent ? 1 : emphasized ? 0.32 : 1, radius: ellipse ? undefined : node.role === "button" || node.role === "input" ? radius.control : radius.card },
@@ -142,11 +156,11 @@ function cardOperations(prefix: string, node: VisualNodeInput, x: number, y: num
 
 /** How much room the composed title actually takes, so content can start below it. */
 function titleBlockHeight(title: string | undefined, width: number): number {
-  return title ? measureTextBlock({ text: title, width, fontSize: typeScale.title.fontSize, fontWeight: typeScale.title.fontWeight, blockStyle: "heading-1", fontFamily: AGENT_FONT }).height : 0;
+  return title ? measureTextBlock({ text: title, width, fontSize: typeScale.title.fontSize, fontWeight: typeScale.title.fontWeight, blockStyle: "heading-1", fontFamily: agentFont() }).height : 0;
 }
 
 function titleOperations(prefix: string, title: string | undefined, x: number, y: number, width: number): CanvasOperation[] {
-  return title ? [{ type: "create_text", id: `${prefix}-title`, x, y, width, fontSize: typeScale.title.fontSize, color: palette.ink, text: title, fontWeight: typeScale.title.fontWeight, blockStyle: "heading-1", renderStyle: "sketch" }] : [];
+  return title ? [{ type: "create_text", id: `${prefix}-title`, x, y, width, fontSize: typeScale.title.fontSize, color: palette.ink, text: title, fontWeight: typeScale.title.fontWeight, blockStyle: "heading-1", renderStyle: agentRender() }] : [];
 }
 
 /**
@@ -310,7 +324,7 @@ function mathSteps(input: VisualCompositionInput, prefix: string): CanvasOperati
 function plot(input: VisualCompositionInput, prefix: string): CanvasOperation[] {
   const x = input.x ?? -460; const y = input.y ?? -300; const width = input.width ?? 920; const axes = input.axes ?? { xMin: -10, xMax: 10, yMin: -10, yMax: 10 }; const padding = 74;
   // The plot area starts under the title, however many lines it takes, and the frame grows with it.
-  const titleHeight = measureTextBlock({ text: input.title ?? "Graph", width: width - 48, fontSize: typeScale.title.fontSize, fontWeight: typeScale.title.fontWeight, blockStyle: "heading-1", fontFamily: AGENT_FONT }).height;
+  const titleHeight = measureTextBlock({ text: input.title ?? "Graph", width: width - 48, fontSize: typeScale.title.fontSize, fontWeight: typeScale.title.fontWeight, blockStyle: "heading-1", fontFamily: agentFont() }).height;
   const series = (input.series ?? []).filter((entry) => entry.points.length >= 2);
   const legendRows = Math.ceil(series.filter((entry) => entry.label).length / 2);
   const legendHeight = legendRows * 28 + (legendRows ? spacing.sm : 0);
@@ -332,17 +346,17 @@ function plot(input: VisualCompositionInput, prefix: string): CanvasOperation[] 
 function studyNote(input: VisualCompositionInput, prefix: string): CanvasOperation[] {
   const x = input.x ?? -470; const y = input.y ?? -320; const width = input.width ?? 940; const sections = input.sections ?? [];
   const blocks = sections.map((section) => ({
-    heading: measureTextBlock({ text: section.heading, width: width - 56, fontSize: typeScale.heading.fontSize, fontWeight: typeScale.heading.fontWeight, blockStyle: "heading-2", fontFamily: AGENT_FONT }).height,
-    body: measureTextBlock({ text: section.body, width: width - 84, fontSize: typeScale.subheading.fontSize, blockStyle: "bullet", fontFamily: AGENT_FONT }).height
+    heading: measureTextBlock({ text: section.heading, width: width - 56, fontSize: typeScale.heading.fontSize, fontWeight: typeScale.heading.fontWeight, blockStyle: "heading-2", fontFamily: agentFont() }).height,
+    body: measureTextBlock({ text: section.body, width: width - 84, fontSize: typeScale.subheading.fontSize, blockStyle: "bullet", fontFamily: agentFont() }).height
   }));
-  const pageTitleHeight = measureTextBlock({ text: input.title ?? "Study notes", width: width - 36, fontSize: 28, fontWeight: 700, blockStyle: "heading-2", fontFamily: AGENT_FONT }).height;
+  const pageTitleHeight = measureTextBlock({ text: input.title ?? "Study notes", width: width - 36, fontSize: 28, fontWeight: 700, blockStyle: "heading-2", fontFamily: agentFont() }).height;
   const contentTop = Math.max(88, 12 + pageTitleHeight + spacing.md);
   const pageHeight = input.height ?? Math.max(320, contentTop + spacing.lg + blocks.reduce((total, block) => total + block.heading + block.body + spacing.md + spacing.lg, 0));
-  const operations: CanvasOperation[] = [{ type: "create_frame", id: `${prefix}-page`, x, y, width, height: pageHeight, title: input.title ?? "Study notes", renderStyle: "sketch" }];
+  const operations: CanvasOperation[] = [{ type: "create_frame", id: `${prefix}-page`, x, y, width, height: pageHeight, title: input.title ?? "Study notes", renderStyle: agentRender() }];
   let noteCursor = y + contentTop;
   sections.forEach((section, index) => {
     const block = blocks[index];
-    operations.push({ type: "create_text", id: `${prefix}-heading-${index}`, x: x + 28, y: noteCursor, width: width - 56, text: section.heading, fontSize: typeScale.heading.fontSize, fontWeight: typeScale.heading.fontWeight, blockStyle: "heading-2", highlightColor: index === 0 ? palette.highlight : undefined, renderStyle: "sketch" }, { type: "create_text", id: `${prefix}-body-${index}`, x: x + 42, y: noteCursor + block.heading + spacing.xs, width: width - 84, text: section.body, fontSize: typeScale.subheading.fontSize, blockStyle: "bullet", renderStyle: "sketch" });
+    operations.push({ type: "create_text", id: `${prefix}-heading-${index}`, x: x + 28, y: noteCursor, width: width - 56, text: section.heading, fontSize: typeScale.heading.fontSize, fontWeight: typeScale.heading.fontWeight, blockStyle: "heading-2", highlightColor: index === 0 ? palette.highlight : undefined, renderStyle: agentRender() }, { type: "create_text", id: `${prefix}-body-${index}`, x: x + 42, y: noteCursor + block.heading + spacing.xs, width: width - 84, text: section.body, fontSize: typeScale.subheading.fontSize, blockStyle: "bullet", renderStyle: agentRender() });
     noteCursor += block.heading + block.body + spacing.md + spacing.lg;
   });
   return operations;
@@ -352,13 +366,13 @@ function timeline(input: VisualCompositionInput, prefix: string): CanvasOperatio
   const nodes = input.nodes ?? []; const x = input.x ?? -480; const y = input.y ?? -100; // Events alternate above and below the axis, so neighbours need half an event card of room each.
   const width = input.width ?? 960; const span = Math.max(width, (nodes.length - 1) * 230); const gap = span / Math.max(1, nodes.length - 1); const operations = titleOperations(prefix, input.title ?? "Timeline", x, y - Math.max(130, titleBlockHeight(input.title ?? "Timeline", width) + spacing.xl), width);
   if (nodes.length > 1) operations.push({ type: "create_arrow", id: `${prefix}-axis`, from: { x, y }, to: { x: x + span, y }, color: palette.muted, strokeWidth: 3 });
-  nodes.forEach((node, index) => { const px = x + gap * index; operations.push({ type: "create_shape", id: `${prefix}-dot-${index}`, kind: "ellipse", x: px - 8, y: y - 8, width: 16, height: 16, color: accents[index % accents.length], filled: true, fillColor: accents[index % accents.length], fillOpacity: 1 }, { type: "create_note", id: `${prefix}-event-${index}`, x: px - 105, y: y + (index % 2 ? 44 : -180), width: 210, height: noteHeight(node.detail ? `${node.label}\n${node.detail}` : node.label, 210, undefined, 112), text: node.detail ? `${node.label}\n${node.detail}` : node.label, fillColor: palette.surface, renderStyle: "sketch" }); }); return operations;
+  nodes.forEach((node, index) => { const px = x + gap * index; operations.push({ type: "create_shape", id: `${prefix}-dot-${index}`, kind: "ellipse", x: px - 8, y: y - 8, width: 16, height: 16, color: accents[index % accents.length], filled: true, fillColor: accents[index % accents.length], fillOpacity: 1 }, { type: "create_note", id: `${prefix}-event-${index}`, x: px - 105, y: y + (index % 2 ? 44 : -180), width: 210, height: noteHeight(node.detail ? `${node.label}\n${node.detail}` : node.label, 210, undefined, 112), text: node.detail ? `${node.label}\n${node.detail}` : node.label, fillColor: palette.surface, renderStyle: agentRender() }); }); return operations;
 }
 
 function comparison(input: VisualCompositionInput, prefix: string): CanvasOperation[] {
   const sections = input.sections ?? []; const x = input.x ?? -460; const y = input.y ?? -300; const width = input.width ?? 920; const columns = Math.max(2, Math.min(4, sections.length || 2)); const operations = titleOperations(prefix, input.title ?? "Comparison", x, y, width); const columnWidth = (width - 24 * (columns - 1)) / columns;
   const columnHeight = input.height ?? sections.reduce((tallest, section) => Math.max(tallest, noteHeight(`${section.heading}\n${section.body}`, columnWidth, "bullet", 200)), 200);
-  sections.forEach((section, index) => operations.push({ type: "create_note", id: `${prefix}-column-${index}`, x: x + index * (columnWidth + 24), y: y + Math.max(72, titleBlockHeight(input.title ?? "Comparison", width) + spacing.lg), width: columnWidth, height: columnHeight, text: `${section.heading}\n${section.body}`, blockStyle: "bullet", fillColor: accentTints[index % accentTints.length], renderStyle: "sketch" })); return operations;
+  sections.forEach((section, index) => operations.push({ type: "create_note", id: `${prefix}-column-${index}`, x: x + index * (columnWidth + 24), y: y + Math.max(72, titleBlockHeight(input.title ?? "Comparison", width) + spacing.lg), width: columnWidth, height: columnHeight, text: `${section.heading}\n${section.body}`, blockStyle: "bullet", fillColor: accentTints[index % accentTints.length], renderStyle: agentRender() })); return operations;
 }
 
 function visualExplainer(input: VisualCompositionInput, prefix: string): CanvasOperation[] {
@@ -368,11 +382,11 @@ function visualExplainer(input: VisualCompositionInput, prefix: string): CanvasO
   const ideaText = (node: VisualNodeInput): string => { const summary = splitDetail(node.detail).summary; return summary ? `${node.label}\n${summary}` : node.label; };
   const heights: number[] = [];
   nodes.forEach((node, index) => { const row = Math.floor(index / columns); heights[row] = Math.max(heights[row] ?? 0, noteHeight(ideaText(node), cardWidth, undefined, 120)); });
-  const explainerTitleHeight = measureTextBlock({ text: input.title ?? "Visual explanation", width: width - 36, fontSize: 28, fontWeight: 700, blockStyle: "heading-2", fontFamily: AGENT_FONT }).height;
+  const explainerTitleHeight = measureTextBlock({ text: input.title ?? "Visual explanation", width: width - 36, fontSize: 28, fontWeight: 700, blockStyle: "heading-2", fontFamily: agentFont() }).height;
   const ideasTop = Math.max(90, 12 + explainerTitleHeight + spacing.md);
   const contentHeight = heights.length ? rowOffset(heights, heights.length, spacing.lg) + ideasTop + spacing.md : 240;
-  const operations: CanvasOperation[] = [{ type: "create_frame", id: `${prefix}-frame`, x, y, width, height: input.height ?? Math.max(320, contentHeight), title: input.title ?? "Visual explanation", renderStyle: "sketch" }];
-  nodes.forEach((node, index) => { const row = Math.floor(index / columns); const px = x + 28 + (index % columns) * (cardWidth + 28); const py = y + ideasTop + rowOffset(heights, row, spacing.lg); operations.push({ type: "create_note", id: `${prefix}-idea-${index}`, x: px, y: py, width: cardWidth, height: heights[row], text: ideaText(node), fillColor: index === 0 ? palette.note : palette.surface, renderStyle: "sketch" }); });
+  const operations: CanvasOperation[] = [{ type: "create_frame", id: `${prefix}-frame`, x, y, width, height: input.height ?? Math.max(320, contentHeight), title: input.title ?? "Visual explanation", renderStyle: agentRender() }];
+  nodes.forEach((node, index) => { const row = Math.floor(index / columns); const px = x + 28 + (index % columns) * (cardWidth + 28); const py = y + ideasTop + rowOffset(heights, row, spacing.lg); operations.push({ type: "create_note", id: `${prefix}-idea-${index}`, x: px, y: py, width: cardWidth, height: heights[row], text: ideaText(node), fillColor: index === 0 ? palette.note : palette.surface, renderStyle: agentRender() }); });
   return operations;
 }
 
@@ -394,10 +408,10 @@ function sequence(input: VisualCompositionInput, prefix: string): CanvasOperatio
   const title = input.title ?? "Sequence";
   const top = y + titleBlockHeight(title, input.width ?? 900) + spacing.lg;
 
-  const columns = actors.map((actor) => ({ label: actor.label, width: Math.max(headerWidth(actor.label, 210), cardMinimumWidth(actor)) }));
+  const columns = actors.map((actor) => ({ label: actor.label, width: Math.max(headerWidth(actor.label, 210, agentFont()), cardMinimumWidth(actor)) }));
   const headerHeight = Math.max(72, ...actors.map((actor) => cardHeight({ ...actor, detail: undefined }, columns[actors.indexOf(actor)].width, 72)));
-  const labelWidth = (message: VisualEdgeInput): number => Math.max(120, measureTextBlock({ text: message.label ?? "", width: 420, fontSize: typeScale.caption.fontSize, fontFamily: AGENT_FONT }).longestLine);
-  const rowHeights = messages.map((message) => Math.round(measureTextBlock({ text: message.label ?? "", width: 420, fontSize: typeScale.caption.fontSize, fontFamily: AGENT_FONT }).height + spacing.xl));
+  const labelWidth = (message: VisualEdgeInput): number => Math.max(120, measureTextBlock({ text: message.label ?? "", width: 420, fontSize: typeScale.caption.fontSize, fontFamily: agentFont() }).longestLine);
+  const rowHeights = messages.map((message) => Math.round(measureTextBlock({ text: message.label ?? "", width: 420, fontSize: typeScale.caption.fontSize, fontFamily: agentFont() }).height + spacing.xl));
   const layout = laneLayout({ x: x + LANE_PAD, y: top, columns, rowHeights: rowHeights.length ? rowHeights : [120], gap: spacing.xl, headerHeight, rowGap: spacing.sm });
   const lifeline = (index: number): number => layout.columns[index].x + layout.columns[index].width / 2;
   const bottom = layout.y + layout.height + spacing.lg;
@@ -406,7 +420,7 @@ function sequence(input: VisualCompositionInput, prefix: string): CanvasOperatio
   const frameWidth = Math.max(layout.width + LANE_PAD * 2, layout.columns.at(-1)!.x + layout.columns.at(-1)!.width / 2 + selfReach - x + LANE_PAD);
 
   const operations: CanvasOperation[] = [
-    { type: "create_frame", id: `${prefix}-frame`, x, y, width: frameWidth, height: bottom - y + LANE_PAD, title, renderStyle: "sketch" }
+    { type: "create_frame", id: `${prefix}-frame`, x, y, width: frameWidth, height: bottom - y + LANE_PAD, title, renderStyle: agentRender() }
   ];
   actors.forEach((actor, index) => {
     const header = layout.columnHeader(index);
@@ -458,7 +472,7 @@ function board(input: VisualCompositionInput, prefix: string): CanvasOperation[]
   const title = input.title ?? "Board";
   if (!columns.length) return titleOperations(prefix, title, x, y, input.width ?? 900);
   const top = y + titleBlockHeight(title, input.width ?? 900) + spacing.lg;
-  const cardWidth = (column: VisualColumnInput): number => Math.max(headerWidth(column.name, 240), ...column.cards.map((card) => cardMinimumWidth({ id: "c", label: card.label, detail: card.detail })));
+  const cardWidth = (column: VisualColumnInput): number => Math.max(headerWidth(column.name, 240, agentFont()), ...column.cards.map((card) => cardMinimumWidth({ id: "c", label: card.label, detail: card.detail })));
   const widths = columns.map((column) => cardWidth(column) + LANE_PAD * 2);
   const cardHeights = columns.map((column) => column.cards.map((card) => noteHeight(card.detail ? `${card.label}\n${card.detail}` : card.label, widths[columns.indexOf(column)] - LANE_PAD * 2, undefined, 84)));
   const columnHeight = Math.max(160, ...cardHeights.map((heights) => heights.reduce((total, height) => total + height + spacing.md, 0)));
@@ -472,7 +486,7 @@ function board(input: VisualCompositionInput, prefix: string): CanvasOperation[]
     let cursor = body.minY + spacing.xs;
     column.cards.forEach((card, cardIndex) => {
       const height = cardHeights[index][cardIndex];
-      operations.push({ type: "create_note", id: `${prefix}-card-${index}-${cardIndex}`, x: header.minX + LANE_PAD, y: cursor, width: header.maxX - header.minX - LANE_PAD * 2, height, text: card.detail ? `${card.label}\n${card.detail}` : card.label, fillColor: card.accent ?? palette.surface, renderStyle: "sketch" });
+      operations.push({ type: "create_note", id: `${prefix}-card-${index}-${cardIndex}`, x: header.minX + LANE_PAD, y: cursor, width: header.maxX - header.minX - LANE_PAD * 2, height, text: card.detail ? `${card.label}\n${card.detail}` : card.label, fillColor: card.accent ?? palette.surface, renderStyle: agentRender() });
       cursor += height + spacing.md;
     });
   });
@@ -488,10 +502,10 @@ function roadmap(input: VisualCompositionInput, prefix: string): CanvasOperation
   const title = input.title ?? "Roadmap";
   if (!lanes.length) return titleOperations(prefix, title, x, y, input.width ?? 900);
   const top = y + titleBlockHeight(title, input.width ?? 900) + spacing.lg;
-  const laneColumnWidth = Math.max(...lanes.map((lane) => headerWidth(lane, 160)));
-  const periodWidth = Math.max(150, ...periods.map((period) => headerWidth(period, 150)));
+  const laneColumnWidth = Math.max(...lanes.map((lane) => headerWidth(lane, 160, agentFont())));
+  const periodWidth = Math.max(150, ...periods.map((period) => headerWidth(period, 150, agentFont())));
   const laneHeight = (lane: string): number => {
-    const labels = items.filter((item) => item.lane === lane).map((item) => measureTextBlock({ text: item.label, width: periodWidth * 2, fontSize: typeScale.caption.fontSize, fontFamily: AGENT_FONT }).height);
+    const labels = items.filter((item) => item.lane === lane).map((item) => measureTextBlock({ text: item.label, width: periodWidth * 2, fontSize: typeScale.caption.fontSize, fontFamily: agentFont() }).height);
     return Math.round(Math.max(64, ...labels.map((height) => height + spacing.lg)));
   };
   const layout = laneLayout({
@@ -584,9 +598,15 @@ export interface ComposedVisual { operations: CanvasOperation[]; repairs: Repair
  * Lay the visual out, then repair it: the human never sees a composed board with text spilling out
  * of its box or two cards on top of each other, whatever the composer or the input did.
  */
-export function composeVisualDetailed(input: VisualCompositionInput): ComposedVisual {
+export function composeVisualDetailed(input: VisualCompositionInput, style?: AgentStyle): ComposedVisual {
+  return withAgentStyle(style, () => composeInStyle(input));
+}
+
+function composeInStyle(input: VisualCompositionInput): ComposedVisual {
   const prefix = cleanId(input.id ?? `visual-${crypto.randomUUID()}`);
-  const { operations, repairs } = repairComposition(layoutVisual(input, prefix));
+  // Every text says which face it is in, so the repair pass measures with the one that renders.
+  const laid = layoutVisual(input, prefix).map((operation) => operation.type === "create_text" ? { ...operation, fontFamily: operation.fontFamily ?? agentFont() } : operation);
+  const { operations, repairs } = repairComposition(laid);
   if (input.kind === "visual_explainer" || input.kind === "guided_explainer") {
     const sequence = explanationSequence(input, prefix, operations);
     if (sequence) operations.push(sequence);

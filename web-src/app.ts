@@ -27,6 +27,9 @@ function icon(name: string): string { return `<svg viewBox="0 0 24 24" width="20
 function uuid(prefix: string): string { return `${prefix}-${crypto.randomUUID()}`; }
 function byId<T extends HTMLElement>(id: string): T { const element = document.getElementById(id); if (!element) throw new Error(`Missing ${id}`); return element as T; }
 
+/** Every settings checkbox and the document field behind it, shared by binding and re-syncing. */
+const SETTING_BOXES = [["setting-smoothing", "inputSmoothing"], ["setting-pressure", "pressure"], ["setting-auto-shape", "autoShape"], ["setting-smart-highlight", "smartHighlight"], ["setting-english-assist", "englishHandwritingAssist"], ["setting-auto-accept", "autoAcceptAgent"], ["setting-clean-style", "cleanStyle"]] as const;
+
 interface Interaction {
   mode: "pan" | "draw" | "instruction" | "marker" | "shape" | "artboard" | "lasso" | "move" | "resize" | "erase";
   pointerId: number; startClient: { x: number; y: number }; startWorld: InkPoint; elementId?: string;
@@ -455,9 +458,17 @@ export class WhiteboardApp {
     byId<HTMLButtonElement>("undo-agent").addEventListener("click", () => { if (!this.collaboration.reject()) { this.setStatus("The agent is still editing", 1800); return; } this.clearAgentOverlay(); this.setStatus("Agent proposal rejected", 1800); });
   }
 
+  /** Settings live in the document, so undo can change them: the boxes have to follow. */
+  private syncSettingBoxes(): void {
+    for (const [id, key] of SETTING_BOXES) {
+      const input = document.getElementById(id) as HTMLInputElement | null;
+      if (input && input.checked !== this.store.document.settings[key]) input.checked = this.store.document.settings[key];
+    }
+  }
+
   private bindSettings(): void {
-    const pairs = [["setting-smoothing", "inputSmoothing"], ["setting-pressure", "pressure"], ["setting-auto-shape", "autoShape"], ["setting-smart-highlight", "smartHighlight"], ["setting-english-assist", "englishHandwritingAssist"], ["setting-auto-accept", "autoAcceptAgent"]] as const;
-    for (const [id, key] of pairs) { const input = byId<HTMLInputElement>(id); input.checked = this.store.document.settings[key]; input.addEventListener("change", () => { if (!this.guardHumanMutation()) { input.checked = this.store.document.settings[key]; return; } this.store.document.settings[key] = input.checked; if (key === "englishHandwritingAssist" && !input.checked) { window.clearTimeout(this.handwritingTimer); this.store.document.elements.forEach((element) => { if (element.type === "stroke") delete element.recognitionText; }); } this.store.changed(); }); }
+    const pairs = SETTING_BOXES;
+    for (const [id, key] of pairs) { const input = byId<HTMLInputElement>(id); input.checked = this.store.document.settings[key]; input.addEventListener("change", () => { if (!this.guardHumanMutation()) { input.checked = this.store.document.settings[key]; return; } if (key === "cleanStyle") this.store.checkpoint(); this.store.document.settings[key] = input.checked; if (key === "cleanStyle") this.store.restyleAgentContent(); if (key === "englishHandwritingAssist" && !input.checked) { window.clearTimeout(this.handwritingTimer); this.store.document.elements.forEach((element) => { if (element.type === "stroke") delete element.recognitionText; }); } this.store.changed(); }); }
     const native = byId<HTMLInputElement>("color-native"); const hex = byId<HTMLInputElement>("color-hex"); const opacity = byId<HTMLInputElement>("color-opacity"); const apply = (value: string) => { if (!/^#[0-9a-f]{6}$/i.test(value)) return; this.penColor = value.toLowerCase(); native.value = this.penColor; hex.value = this.penColor; document.querySelectorAll("[data-color]").forEach((item) => item.classList.remove("is-active")); if (this.renderer.selectionIds.size && this.collaboration.canHumanMutateBoard()) { this.store.checkpoint(); this.store.applyOperation({ type: "update_style", ids: [...this.renderer.selectionIds], color: this.penColor, opacity: this.opacity }, "human"); this.store.changed(); } };
     native.addEventListener("input", () => apply(native.value)); hex.addEventListener("change", () => apply(hex.value)); opacity.addEventListener("input", () => { this.opacity = Number(opacity.value) / 100; });
     byId<HTMLElement>("handwriting-support").textContent = this.handwriting.supported() ? "Local English recognition is available; visible ink remains unchanged." : "No local OS recognition available; only gentle geometric smoothing is used.";
@@ -583,6 +594,11 @@ export class WhiteboardApp {
     this.renderer.agentMarkers = structuredClone(this.store.document.turn?.agentMarkers ?? []);
     if (this.store.hasAgentContribution()) this.renderer.activeAgentIds = new Set(this.store.document.turn?.pendingChangeIds ?? []);
     byId<HTMLSpanElement>("revision").textContent = `r${this.store.document.revision}`;
+    // A visible button has to be honest: nothing to undo, nothing to click.
+    const editable = this.collaboration.canHumanMutateBoard();
+    this.syncSettingBoxes();
+    byId<HTMLButtonElement>("undo").disabled = !editable || !this.store.canUndo();
+    byId<HTMLButtonElement>("redo").disabled = !editable || !this.store.canRedo();
     const submit = byId<HTMLButtonElement>("submit-turn"); const busy = ["queued", "claimed", "planning", "working", "review"].includes(state);
     submit.classList.toggle("is-waiting", busy && state !== "review"); submit.disabled = busy;
     this.syncExplanation(); this.updateZoom(); this.updateContextPrompt();

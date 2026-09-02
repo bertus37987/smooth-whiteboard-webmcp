@@ -2,6 +2,7 @@ import { PageElement, elementBounds } from "../src/document";
 import { beautifyStroke } from "../src/strokes";
 import { measureTextBlock } from "./measure";
 import { fitSubpaths, parseSvgPath } from "./path";
+import { AgentStyle } from "./compositions";
 import { Bounds, CanvasOperation, ConnectorLanes, ConnectorRoute, WhiteboardDocument, annotationGeometry, boardBounds, cloneBoard, connectionRoute, elementSignature, emptyBoard, estimateTextHeight, iconSegments, migrateBoard, operationElement, polygonShapePoints, scaleElement, translateElement } from "./model";
 
 const STORAGE_KEY = "smooth-whiteboard-v3";
@@ -35,6 +36,9 @@ export class BoardStore extends EventTarget {
     catch { this.agentBefore = null; }
     this.refreshConnections(); this.cleanGroups(); this.resetMutationBaseline();
   }
+
+  canUndo(): boolean { return this.undoStack.length > 0; }
+  canRedo(): boolean { return this.redoStack.length > 0; }
 
   checkpoint(): void { this.undoStack.push(cloneBoard(this.document)); if (this.undoStack.length > 100) this.undoStack.shift(); this.redoStack = []; }
 
@@ -123,6 +127,7 @@ export class BoardStore extends EventTarget {
     this.document.groups = Object.fromEntries(Object.entries(this.document.groups ?? {}).map(([id, members]) => [id, members.filter((member) => !proposed.has(member))]).filter(([, members]) => members.length > 1));
     this.document.explanationSequences = before.explanationSequences ? structuredClone(before.explanationSequences) : this.document.explanationSequences;
     this.document.presentation = before.presentation ? structuredClone(before.presentation) : null;
+    this.document.symbols = structuredClone(before.symbols ?? {});
     this.agentBefore = null; this.agentRemovedIds.clear(); localStorage.removeItem(PRE_AGENT_STORAGE_KEY);
     if (cancelledTurn) this.document.turn = { ...cancelledTurn, status: "cancelled", instructionInk: [], agentMarkers: [], pendingChangeIds: [], leaseToken: undefined };
     // The rollback removes agent content, not human work: refresh the baseline without reporting it as human feedback.
@@ -173,9 +178,52 @@ export class BoardStore extends EventTarget {
    * Agent text defaults to the hand-drawn look on the open canvas and to a clean sans face on an
    * artboard, so a UI mockup does not come out in marker pen. An explicit value always wins.
    */
+  /**
+   * The one place that decides how the agent's work looks: the human's Appearance setting, and
+   * always clean on an artboard, where a hand-drawn mockup would be wrong.
+   */
+  agentStyle(parentId?: string): AgentStyle {
+    const clean = this.document.settings.cleanStyle || this.onArtboard(parentId);
+    return { fontFamily: clean ? "sans" : "handwriting", renderStyle: clean ? "clean" : "sketch" };
+  }
+
   private agentTextStyle(parentId: string | undefined, fontFamily: "sans" | "serif" | "mono" | "handwriting" | undefined, renderStyle: "clean" | "sketch" | undefined): { fontFamily: "sans" | "serif" | "mono" | "handwriting"; renderStyle: "clean" | "sketch" } {
-    const clean = this.onArtboard(parentId);
-    return { fontFamily: fontFamily ?? (clean ? "sans" : "handwriting"), renderStyle: renderStyle ?? (clean ? "clean" : "sketch") };
+    const style = this.agentStyle(parentId);
+    return { fontFamily: fontFamily ?? style.fontFamily, renderStyle: renderStyle ?? style.renderStyle };
+  }
+
+  /**
+   * Redraws everything the agent made in the style that is set now. Only agent elements are touched —
+   * your own writing is plain already — and note cards are re-fitted afterwards, because the two
+   * faces do not have the same metrics and a taller text would otherwise hang out of its card.
+   */
+  restyleAgentContent(): void {
+    const agentIds = new Set(this.document.agentElementIds);
+    const artboards = new Set(this.document.artboardIds);
+    const containers = ["artboard", "frame", "section", "screen"];
+    for (const element of this.document.elements) {
+      if (!agentIds.has(element.id) || artboards.has(element.id)) continue;
+      // Symbols are drawn cleanly in both looks, so they are left exactly as they are.
+      if (element.semanticRole === "icon") continue;
+      const style = this.agentStyle(element.parentId);
+      if (element.type === "text") {
+        element.fontFamily = style.fontFamily; element.renderStyle = style.renderStyle;
+        element.height = estimateTextHeight(element.text, element.width, element.fontSize, element);
+      } else if (element.type === "shape" && !containers.includes(element.semanticRole ?? "")) {
+        element.renderStyle = style.renderStyle;
+      }
+    }
+    // The two faces do not wrap the same way, so any card its text now sticks out of has to grow.
+    // Only grow: shrinking a card would move content a composition deliberately spaced out.
+    for (const [groupId, members] of Object.entries(this.document.groups ?? {})) {
+      void groupId;
+      const elements = this.document.elements.filter((element) => members.includes(element.id));
+      const card = elements.find((element) => element.type === "shape" && (element.kind === "rectangle" || element.kind === "ellipse") && !containers.includes(element.semanticRole ?? "") && !artboards.has(element.id));
+      const texts = elements.filter((element) => element.type === "text");
+      if (!card || !texts.length) continue;
+      const bottom = Math.max(...texts.map((text) => elementBounds(text).maxY));
+      if (bottom > elementBounds(card).maxY) this.applyOperation({ type: "fit_to_content", id: card.id, mode: "container" }, "human");
+    }
   }
 
   applyOperation(operation: CanvasOperation, source: "human" | "agent"): string[] {
@@ -191,12 +239,17 @@ export class BoardStore extends EventTarget {
       if ("renderStyle" in operation && operation.renderStyle && element.type !== "text") element.renderStyle = operation.renderStyle;
       this.document.elements.push(element); created.push(element.id);
       if (source === "agent" && !this.document.agentElementIds.includes(element.id)) this.document.agentElementIds.push(element.id);
+    } else if (operation.type === "define_symbol") {
+      const normalised = fitSubpaths(parseSvgPath(operation.d), { x: 0, y: 0, width: 1, height: 1 })
+        .map((subpath) => "M " + subpath.map((point) => `${Math.round(point.x * 1000) / 1000} ${Math.round(point.y * 1000) / 1000}`).join(" L "))
+        .join(" ");
+      if (normalised) (this.document.symbols ??= {})[operation.name] = normalised;
     } else if (operation.type === "create_icon") {
       const prefix = operation.id ?? `icon-${crypto.randomUUID()}`; const members: string[] = [];
-      for (const [index, points] of iconSegments(operation.name, operation.x, operation.y, Math.max(12, operation.size ?? 32)).entries()) {
+      for (const [index, points] of iconSegments(operation.name, operation.x, operation.y, Math.max(12, operation.size ?? 32), this.document.symbols, operation.d).entries()) {
         // Polygons, not strokes: a symbol has to keep its corners instead of being smoothed into a blob.
         const first = points[0]; const last = points[points.length - 1];
-        const element = operationElement({ type: "create_polygon", id: `${prefix}-${index}`, points, closed: Math.hypot(last.x - first.x, last.y - first.y) < Math.max(1, (operation.size ?? 32) / 24), strokeWidth: Math.max(1.5, (operation.size ?? 32) / 14), color: operation.color ?? "#080808" }); element.semanticRole = "icon"; element.parentId = operation.parentId; element.name = operation.name;
+        const element = operationElement({ type: "create_polygon", id: `${prefix}-${index}`, points, closed: Math.hypot(last.x - first.x, last.y - first.y) < Math.max(1, (operation.size ?? 32) / 24), strokeWidth: Math.max(1.5, (operation.size ?? 32) / 14), color: operation.color ?? "#080808" }); element.semanticRole = "icon"; element.parentId = operation.parentId; element.name = operation.name ?? "symbol";
         this.document.elements.push(element); members.push(element.id); created.push(element.id); if (source === "agent") this.document.agentElementIds.push(element.id);
       }
       if (members.length > 1) (this.document.groups ??= {})[prefix] = members;
@@ -204,9 +257,9 @@ export class BoardStore extends EventTarget {
       if (source === "agent" && this.document.turn) this.document.turn.agentMarkers.push({ id: operation.id ?? `agent-marker-${crypto.randomUUID()}`, kind: operation.points?.length ? "stroke" : "note", points: operation.points?.map((point) => ({ ...point, pressure: point.pressure ?? .5 })), x: operation.x, y: operation.y, text: operation.text?.slice(0, 300), anchorId: operation.anchorId });
     } else if (operation.type === "create_note") {
       const prefix = operation.id ?? `note-${crypto.randomUUID()}`; const width = Math.max(120, operation.width ?? 320);
-      const noteFont = source === "agent" && !this.onArtboard(operation.parentId) ? "handwriting" as const : "sans" as const;
+      const noteFont = source === "agent" ? this.agentStyle(operation.parentId).fontFamily : "sans" as const;
       const height = Math.max(90, operation.height ?? Math.round(measureTextBlock({ text: operation.text, width: Math.max(84, width - 36), fontSize: 24, blockStyle: operation.blockStyle, fontFamily: noteFont }).height + 36));
-      const shape = operationElement({ type: "create_shape", id: `${prefix}-card`, kind: "rectangle", x: operation.x, y: operation.y, width, height, color: operation.color ?? "#080808", strokeWidth: 2, fillColor: operation.fillColor ?? "#fff4b8", fillOpacity: 0.72, radius: 18 }); shape.renderStyle = operation.renderStyle ?? (source === "agent" && !this.onArtboard(operation.parentId) ? "sketch" : "clean"); shape.semanticRole = "note"; shape.parentId = operation.parentId;
+      const shape = operationElement({ type: "create_shape", id: `${prefix}-card`, kind: "rectangle", x: operation.x, y: operation.y, width, height, color: operation.color ?? "#080808", strokeWidth: 2, fillColor: operation.fillColor ?? "#fff4b8", fillOpacity: 0.72, radius: 18 }); shape.renderStyle = operation.renderStyle ?? (source === "agent" ? this.agentStyle(operation.parentId).renderStyle : "clean"); shape.semanticRole = "note"; shape.parentId = operation.parentId;
       const text = operationElement({ type: "create_text", id: `${prefix}-text`, x: operation.x + 18, y: operation.y + 18, width: width - 36, text: operation.text, fontSize: 24, color: operation.color ?? "#080808", fontFamily: noteFont, blockStyle: operation.blockStyle ?? "body", renderStyle: shape.renderStyle, semanticRole: "note-body", parentId: operation.parentId });
       this.document.elements.push(shape, text); created.push(shape.id, text.id); (this.document.groups ??= {})[prefix] = [shape.id, text.id]; if (source === "agent") this.document.agentElementIds.push(shape.id, text.id);
     } else if (operation.type === "create_frame") {

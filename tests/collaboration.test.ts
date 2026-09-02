@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { CollaborationSession, CollaborationView } from "../web-src/collaboration";
 import { BoardStore } from "../web-src/store";
-import { elementBounds } from "../src/document";
-import { Bounds, CanvasOperation, annotationKinds, boundsOverlapArea, iconNames, plannedElementIds, resolveGestureElements } from "../web-src/model";
+import { PageElement, elementBounds } from "../src/document";
+import { readFileSync } from "node:fs";
+import { Bounds, CanvasOperation, annotationKinds, boardBounds, boundsOverlapArea, iconNames, isCanvasOperation, lintBoard, migrateBoard, plannedElementIds, resolveGestureElements } from "../web-src/model";
 import { InkPoint } from "../src/strokes";
 import { registerWhiteboardTools } from "../web-src/webmcp";
 
@@ -666,6 +667,153 @@ async function main(): Promise<void> {
     assert.ok(test.store.document.elements.some((element) => element.id === "kept-card"));
     assert.equal(test.store.undo(), true);
     assert.equal(test.store.document.elements.some((element) => element.id === "kept-card"), false, "and one undo takes the whole proposal back");
+  }
+
+  /* TEST 30 - a symbol the agent draws once can be stamped by name, in the same call. */
+  {
+    const test = harness();
+    test.session.submit({ promptText: "Draw a valve", instructionInk: [] });
+    const lease = await claim(test);
+    const define: CanvasOperation = { type: "define_symbol", name: "valve", d: "M 0 0 L 40 20 L 0 40 Z M 80 0 L 40 20 L 80 40 Z" };
+    const stamp: CanvasOperation = { type: "create_icon", id: "v1", name: "valve", x: 0, y: 0, size: 60 };
+    const applied = await test.session.apply([define, stamp], undefined, lease.leaseToken);
+    assert.equal(applied.ok, true, "defining and stamping in one batch is allowed");
+    assert.deepEqual(applied.createdIds, plannedElementIds(stamp, { valve: define.type === "define_symbol" ? define.d : "" }), "the stamped symbol creates exactly the predicted ids");
+    assert.deepEqual(Object.keys(test.store.document.symbols ?? {}), ["valve"], "and the symbol is kept on the board");
+
+    const again = await test.session.apply([{ type: "create_icon", id: "v2", name: "valve", x: 400, y: 0, size: 60 }], undefined, lease.leaseToken);
+    assert.equal(again.ok, true, "a later call can stamp it without redefining it");
+    assert.equal((test.session.inspect("all").symbols as string[])[0], "valve", "and inspect lists what there is to stamp");
+
+    const drawn = test.store.document.elements.filter((element) => element.id.startsWith("v1-"));
+    assert.ok(drawn.length >= 2 && drawn.every((element) => element.type === "shape"), "the symbol is ordinary editable geometry");
+    const box = boardBounds(drawn)!;
+    assert.ok(box.maxX - box.minX <= 61 && box.maxY - box.minY <= 61, "and it is scaled into the size it was asked for");
+  }
+
+  /* TEST 31 - a name nobody defined is refused, and a built-in name cannot be taken over. */
+  {
+    const test = harness();
+    test.session.submit({ promptText: "Symbols", instructionInk: [] });
+    const lease = await claim(test);
+    const before = test.store.document.elements.length;
+    const refused = await test.session.apply([{ type: "create_icon", id: "ghost", name: "flux-capacitor", x: 0, y: 0 }], undefined, lease.leaseToken);
+    assert.equal(refused.ok, false);
+    assert.equal(refused.error, "unknown_symbol");
+    assert.deepEqual(refused.names, ["flux-capacitor"], "the answer names what could not be found");
+    assert.ok((refused.availableSymbols as string[]).includes("server"), "and says what can be stamped instead");
+    assert.equal(test.store.document.elements.length, before, "nothing was drawn");
+    assert.equal(isCanvasOperation({ type: "define_symbol", name: "server", d: "M 0 0 L 1 1" }), false, "a built-in name cannot be redefined");
+  }
+
+  /* TEST 32 - a rejected proposal takes its symbol definition back with it. */
+  {
+    const test = harness();
+    test.session.submit({ promptText: "Define", instructionInk: [] });
+    const lease = await claim(test);
+    await test.session.apply([
+      { type: "define_symbol", name: "cog-wheel", d: "M 0 0 L 30 0 L 30 30 L 0 30 Z" },
+      { type: "create_icon", id: "c1", name: "cog-wheel", x: 0, y: 0, size: 40 }
+    ], undefined, lease.leaseToken);
+    assert.deepEqual(Object.keys(test.store.document.symbols ?? {}), ["cog-wheel"]);
+    test.session.complete("Defined", lease.leaseToken);
+    assert.equal(test.session.reject(), true);
+    assert.deepEqual(Object.keys(test.store.document.symbols ?? {}), [], "the definition goes with the proposal");
+    assert.equal(test.store.document.elements.some((element) => element.id.startsWith("c1-")), false);
+
+    /* And a kept one survives being saved and loaded again. */
+    const kept = migrateBoard(JSON.parse(JSON.stringify({ ...test.store.document, symbols: { arrowhead: "M 0 0 L 1 1" }, presentation: { sequenceId: "s", index: 2 } })));
+    assert.deepEqual(Object.keys(kept?.symbols ?? {}), ["arrowhead"], "symbols survive a round trip through storage");
+    assert.equal(kept?.presentation?.index, 2, "and so does the walkthrough step");
+  }
+
+  /* TEST 33 - the clean style reaches both what is drawn and what is measured. */
+  {
+    const test = harness();
+    test.store.document.settings.cleanStyle = true;
+    test.session.submit({ promptText: "Explain", instructionInk: [] });
+    const lease = await claim(test);
+    const composed = await test.session.compose({ kind: "flowchart", id: "flow", title: "Release",
+      nodes: [{ id: "build", label: "Build the thing" }, { id: "ship", label: "Ship it to everyone" }],
+      edges: [{ fromId: "build", toId: "ship" }] }, undefined, lease.leaseToken);
+    assert.equal(composed.ok, true);
+    const texts = test.store.document.elements.filter((element): element is Extract<PageElement, { type: "text" }> => element.type === "text");
+    assert.ok(texts.length > 0 && texts.every((text) => text.fontFamily === "sans"), "clean style writes in plain type");
+    assert.ok(test.store.document.elements.every((element) => element.renderStyle !== "sketch"), "and draws straight lines");
+    assert.deepEqual(lintBoard(test.store.document).filter((issue) => issue.code === "overlap"), [], "measured in the same face it renders in, so nothing collides");
+    for (const text of texts) {
+      const card = test.store.document.elements.find((element) => element.type === "shape" && element.semanticRole !== "artboard" && elementBounds(element).minX <= elementBounds(text).minX && elementBounds(element).maxX >= elementBounds(text).maxX);
+      if (card) assert.ok(elementBounds(card).maxY + 1 >= elementBounds(text).maxY, `"${text.text}" stays inside its card`);
+    }
+  }
+
+  /* TEST 34 - flipping the switch restyles the agent's work and spares the human's. */
+  {
+    const test = harness();
+    humanApply(test.store, { type: "create_text", id: "mine", x: -600, y: -600, width: 200, text: "My own note", fontSize: 20 });
+    test.session.submit({ promptText: "Add a card", instructionInk: [] });
+    const lease = await claim(test);
+    await test.session.apply([{ type: "create_note", id: "card", x: 0, y: 0, width: 220, text: "Something the agent wrote that runs over more than one line" }], undefined, lease.leaseToken);
+    test.session.complete("Added", lease.leaseToken);
+    assert.equal(test.session.accept(), true);
+
+    const label = () => test.store.document.elements.find((element) => element.id === "card-text") as Extract<PageElement, { type: "text" }>;
+    const cardShape = () => test.store.document.elements.find((element) => element.id === "card-card")!;
+    assert.equal(label().fontFamily, "handwriting", "the agent writes by hand until the switch is flipped");
+
+    test.store.document.settings.cleanStyle = true;
+    test.store.restyleAgentContent();
+    test.store.changed();
+
+    const restyled = label();
+    assert.equal(restyled.fontFamily, "sans", "the agent's writing follows the setting");
+    assert.equal(restyled.renderStyle, "clean");
+    assert.ok(elementBounds(cardShape()).maxY + 1 >= elementBounds(restyled).maxY, "and the card grew with the text instead of cutting it off");
+    const mine = test.store.document.elements.find((element) => element.id === "mine") as Extract<PageElement, { type: "text" }>;
+    assert.equal(mine.fontFamily, undefined, "the human's own text is left exactly as it was");
+  }
+
+  /* TEST 35 - undo and redo are reachable and say when there is nothing to do. */
+  {
+    const test = harness();
+    assert.equal(test.store.canUndo(), false, "a fresh board has nothing to go back to");
+    humanApply(test.store, box("first", 0, 0));
+    assert.equal(test.store.canUndo(), true, "after drawing there is");
+    assert.equal(test.store.canRedo(), false);
+    assert.equal(test.store.undo(), true);
+    assert.equal(test.store.canRedo(), true, "and going back makes going forward possible");
+
+    const markup = readFileSync("web/index.html", "utf8");
+    const css = readFileSync("web/app.css", "utf8");
+    assert.ok(markup.includes('id="undo"') && markup.includes('id="redo"'), "both buttons are in the toolbar");
+    assert.equal(/max-width:1420px\)\{[^}]*\.secondary-action\{display:none\}/.test(css), false, "and no breakpoint hides them any more");
+    assert.ok(readFileSync("web-src/app.ts", "utf8").includes('byId<HTMLButtonElement>("undo").disabled'), "a button with nothing to undo is disabled, not silent");
+  }
+
+  /* TEST 36 - restyling a whole composition leaves every label inside its own card. */
+  {
+    const test = harness();
+    test.session.submit({ promptText: "Deployment", instructionInk: [] });
+    const lease = await claim(test);
+    await test.session.compose({ kind: "flowchart", id: "flow", title: "Deployment",
+      nodes: [{ id: "wait", label: "Auf die Freigabe des ganzen Teams warten" }, { id: "ship", label: "Ausrollen" }],
+      edges: [{ fromId: "wait", toId: "ship" }] }, undefined, lease.leaseToken);
+    test.session.complete("Composed", lease.leaseToken);
+    assert.equal(test.session.accept(), true);
+
+    test.store.document.settings.cleanStyle = true;
+    test.store.restyleAgentContent();
+    test.store.changed();
+
+    for (const members of Object.values(test.store.document.groups ?? {})) {
+      const elements = test.store.document.elements.filter((element) => members.includes(element.id));
+      const card = elements.find((element) => element.type === "shape");
+      if (!card) continue;
+      for (const text of elements.filter((element) => element.type === "text")) {
+        assert.ok(elementBounds(text).maxY <= elementBounds(card).maxY + 1, `"${(text as Extract<PageElement, { type: "text" }>).text}" stays inside its card after the restyle`);
+      }
+    }
+    assert.deepEqual(lintBoard(test.store.document).filter((issue) => issue.code === "overlap"), [], "and nothing landed on top of anything else");
   }
 
   console.log("collaboration tests: ok");

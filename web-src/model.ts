@@ -2,7 +2,7 @@ import { PageElement, ShapeElement, TextElement, boundsForElements, elementBound
 import { InkPoint } from "../src/strokes";
 import { TextMetricsInput } from "../src/rendering";
 import { measuredTextHeight } from "./measure";
-import { parseSvgPath } from "./path";
+import { fitSubpaths, parseSvgPath } from "./path";
 
 export interface Camera { x: number; y: number; zoom: number }
 export interface Bounds { minX: number; minY: number; maxX: number; maxY: number }
@@ -14,6 +14,8 @@ export interface WhiteboardSettings {
   englishHandwritingAssist: boolean;
   /** Take the agent's proposals straight onto the board; Ctrl+Z still takes one back whole. */
   autoAcceptAgent: boolean;
+  /** Draw the agent's work in plain type and straight lines instead of the hand-drawn look. */
+  cleanStyle: boolean;
 }
 export interface PriorityRegion {
   source: "ai-pen" | "attachment" | "selection" | "highlight" | "recent-edit" | "deleted";
@@ -114,6 +116,8 @@ export interface WhiteboardDocument {
   sources: SourceReference[];
   /** Which guided-explanation step the human is looking at; survives reloads and can be set by the agent. */
   presentation?: { sequenceId: string; index: number } | null;
+  /** Symbols the agent drew and named, as SVG path data in a 0..1 box. Reusable like the built-in ones. */
+  symbols?: Record<string, string>;
 }
 
 export type BoardTool = "select" | "hand" | "pen" | "ai-pen" | "marker" | "rectangle" | "ellipse" | "arrow" | "text" | "sticky" | "image" | "lasso" | "ai-lasso" | "eraser" | "artboard";
@@ -132,7 +136,8 @@ export type CanvasOperation =
   | { type: "create_path"; id?: string; points?: Array<{ x: number; y: number }>; d?: string; x?: number; y?: number; width?: number; height?: number; smooth?: boolean; closed?: boolean; bow?: number; color?: string; strokeWidth?: number; fillColor?: string; fillOpacity?: number; renderStyle?: "clean" | "sketch" }
   | { type: "create_annotation"; id?: string; kind: AnnotationKind; x: number; y: number; width: number; height: number; direction?: "left" | "right" | "up" | "down"; text?: string; anchorId?: string; color?: string; strokeWidth?: number; fontSize?: number; renderStyle?: "clean" | "sketch" }
   | { type: "create_callout"; id?: string; x: number; y: number; width?: number; text: string; anchorId?: string; color?: string; fillColor?: string; fontSize?: number; renderStyle?: "clean" | "sketch" }
-  | { type: "create_icon"; id?: string; name: IconName; x: number; y: number; size?: number; color?: string; parentId?: string }
+  | { type: "create_icon"; id?: string; name?: string; d?: string; x: number; y: number; size?: number; color?: string; parentId?: string }
+  | { type: "define_symbol"; name: string; d: string }
   | { type: "create_agent_marker"; id?: string; points?: InkPoint[]; x?: number; y?: number; text?: string; anchorId?: string }
   | { type: "translate"; ids: string[]; dx: number; dy: number }
   | { type: "resize"; id: string; x: number; y: number; width: number; height: number }
@@ -175,7 +180,8 @@ export function isCanvasOperation(value: unknown): value is CanvasOperation {
     case "create_arrow": return position(operation.from) && position(operation.to) && optionalFinite(operation.strokeWidth) && optionalOneOf(operation.arrowHeads, ["end", "start", "both"]) && optionalOneOf(operation.lineStyle, ["solid", "dashed", "dotted"]);
     case "create_stroke": return Array.isArray(operation.points) && operation.points.length > 1 && operation.points.every(position);
     case "create_polygon": return Array.isArray(operation.points) && operation.points.length > 1 && operation.points.every(position);
-    case "create_icon": return typeof operation.name === "string" && (iconNames as string[]).includes(operation.name) && finite(operation.x) && finite(operation.y) && optionalFinite(operation.size);
+    case "create_icon": return (typeof operation.d === "string" ? operation.d.trim().length > 0 : typeof operation.name === "string" && operation.name.trim().length > 0) && finite(operation.x) && finite(operation.y) && optionalFinite(operation.size);
+    case "define_symbol": return typeof operation.name === "string" && /^[a-z0-9][a-z0-9 _-]{0,39}$/i.test(operation.name) && !(iconNames as string[]).includes(operation.name) && typeof operation.d === "string" && parseSvgPath(operation.d).length > 0;
     case "create_path": return (typeof operation.d === "string" && operation.d.trim().length > 0 ? finite(operation.x) && finite(operation.y) && optionalFinite(operation.width) && optionalFinite(operation.height) : Array.isArray(operation.points) && operation.points.length > 1 && operation.points.every(position)) && optionalFinite(operation.bow) && optionalFinite(operation.strokeWidth);
     case "create_annotation": return (annotationKinds as string[]).includes(String(operation.kind)) && finite(operation.x) && finite(operation.y) && finite(operation.width) && finite(operation.height) && optionalOneOf(operation.direction, ["left", "right", "up", "down"]) && optionalFinite(operation.strokeWidth) && optionalFinite(operation.fontSize) && (operation.text === undefined || typeof operation.text === "string");
     case "create_callout": return finite(operation.x) && finite(operation.y) && typeof operation.text === "string" && operation.text.trim().length > 0 && optionalFinite(operation.width) && optionalFinite(operation.fontSize) && (operation.anchorId === undefined || typeof operation.anchorId === "string");
@@ -208,8 +214,8 @@ export function isCanvasOperation(value: unknown): value is CanvasOperation {
   }
 }
 
-export const defaultSettings = (): WhiteboardSettings => ({ inputSmoothing: true, pressure: true, autoShape: false, smartHighlight: true, englishHandwritingAssist: true, autoAcceptAgent: false });
-export const emptyBoard = (): WhiteboardDocument => ({ version: 3, revision: 0, elements: [], agentElementIds: [], request: null, turn: null, settings: defaultSettings(), lastAgentRevision: 0, connections: {}, groups: {}, artboardIds: [], explanationSequences: [], sources: [], presentation: null });
+export const defaultSettings = (): WhiteboardSettings => ({ inputSmoothing: true, pressure: true, autoShape: false, smartHighlight: true, englishHandwritingAssist: true, autoAcceptAgent: false, cleanStyle: false });
+export const emptyBoard = (): WhiteboardDocument => ({ version: 3, revision: 0, elements: [], agentElementIds: [], request: null, turn: null, settings: defaultSettings(), lastAgentRevision: 0, connections: {}, groups: {}, artboardIds: [], explanationSequences: [], sources: [], presentation: null, symbols: {} });
 
 export function cloneBoard(document: WhiteboardDocument): WhiteboardDocument { return structuredClone(document); }
 
@@ -242,7 +248,7 @@ export function migrateBoard(value: unknown): WhiteboardDocument | null {
   } : request && request.state !== "answered" ? { id: request.id, status: request.state === "working" ? "working" : "queued", submittedRevision: legacy.revision, createdAt: request.createdAt, promptText: request.instruction ?? "", selectionIds: request.selectionIds, instructionInk: request.ink ?? [], agentMarkers: [], priorityRegions: [], changedElementIds: [], pendingChangeIds: [] } : null;
   const elements = structuredClone(legacy.elements);
   const artboardIds = elements.filter((element) => element.artboard || element.semanticRole === "artboard").map((element) => element.id);
-  return { version: 3, revision: legacy.revision, elements, agentElementIds: [...legacy.agentElementIds], request: null, turn, settings: { ...defaultSettings(), ...(legacy as { settings?: Partial<WhiteboardSettings> }).settings }, lastAgentRevision: (legacy as { lastAgentRevision?: number }).lastAgentRevision ?? 0, connections: structuredClone(legacy.connections ?? {}), groups: structuredClone(legacy.groups ?? {}), artboardIds, explanationSequences: [], sources: [] };
+  return { version: 3, revision: legacy.revision, elements, agentElementIds: [...legacy.agentElementIds], request: null, turn, settings: { ...defaultSettings(), ...(legacy as { settings?: Partial<WhiteboardSettings> }).settings }, lastAgentRevision: (legacy as { lastAgentRevision?: number }).lastAgentRevision ?? 0, connections: structuredClone(legacy.connections ?? {}), groups: structuredClone(legacy.groups ?? {}), artboardIds, explanationSequences: [], sources: [], presentation: (legacy as { presentation?: WhiteboardDocument["presentation"] }).presentation ?? null, symbols: { ...(legacy as { symbols?: Record<string, string> }).symbols } };
 }
 
 export function boardBounds(elements: PageElement[]): { minX: number; minY: number; maxX: number; maxY: number } | null {
@@ -676,10 +682,21 @@ const iconPaths: Partial<Record<IconName, string>> = {
   terminal: "M .08 .18 H .92 V .82 H .08 Z M .22 .36 L .38 .5 L .22 .64 M .5 .66 h .24"
 };
 
-export function iconSegments(name: Extract<CanvasOperation, { type: "create_icon" }>["name"], x: number, y: number, size: number): Array<Array<{ x: number; y: number; pressure: number }>> {
+/** A symbol library the agent built with define_symbol, on top of the built-in names. */
+export type SymbolLibrary = Record<string, string>;
+
+/**
+ * Points for one symbol. Built-in names win over defined ones, so "server" means the same thing on
+ * every board; `path` draws a one-off symbol that was never named.
+ */
+export function iconSegments(name: string | undefined, x: number, y: number, size: number, symbols?: SymbolLibrary, path?: string): Array<Array<{ x: number; y: number; pressure: number }>> {
   const point = (px: number, py: number) => ({ x: x + px * size, y: y + py * size, pressure: .5 });
-  const drawn = iconPaths[name];
-  if (drawn) return parseSvgPath(drawn, 8).map((subpath) => subpath.map((position) => point(position.x, position.y)));
+  const drawn = path ?? (name ? iconPaths[name as IconName] ?? symbols?.[name] : undefined);
+  if (drawn) {
+    const subpaths = parseSvgPath(drawn, 8);
+    const fitted = fitSubpaths(subpaths, { x: 0, y: 0, width: 1, height: 1 });
+    return fitted.map((subpath) => subpath.map((position) => point(position.x, position.y)));
+  }
   if (name === "check") return [[point(.08, .52), point(.38, .82), point(.92, .16)]];
   if (name === "close") return [[point(.14, .14), point(.86, .86)], [point(.86, .14), point(.14, .86)]];
   if (name === "plus") return [[point(.5, .08), point(.5, .92)], [point(.08, .5), point(.92, .5)]];
@@ -800,7 +817,7 @@ export function tableCellIds(operation: Extract<CanvasOperation, { type: "create
 }
 
 /** Every concrete element id an operation will create when it carries an explicit id. */
-export function plannedElementIds(operation: CanvasOperation): string[] {
+export function plannedElementIds(operation: CanvasOperation, symbols?: SymbolLibrary): string[] {
   const explicit = "id" in operation && typeof operation.id === "string" ? operation.id : undefined;
   if (!explicit) return [];
   switch (operation.type) {
@@ -811,7 +828,7 @@ export function plannedElementIds(operation: CanvasOperation): string[] {
     case "create_callout": return operation.anchorId ? [`${explicit}-box`, `${explicit}-text`, `${explicit}-leader`] : [`${explicit}-box`, `${explicit}-text`];
     case "create_frame": return operation.title ? [`${explicit}-border`, `${explicit}-title`] : [`${explicit}-border`];
     case "create_table": return tableCellIds(operation, explicit);
-    case "create_icon": return iconSegments(operation.name, 0, 0, 32).map((_, index) => `${explicit}-${index}`);
+    case "create_icon": return iconSegments(operation.name, 0, 0, 32, symbols, operation.d).map((_, index) => `${explicit}-${index}`);
     default: return [];
   }
 }
@@ -865,14 +882,17 @@ export type PreflightResult = { ok: true } | { ok: false; error: "id_conflict" |
  * within the batch, and every mutation target actually resolves (including objects created
  * earlier in the same batch).
  */
-export function preflightOperations(operations: CanvasOperation[], existingElementIds: Iterable<string>, existingGroupIds: Iterable<string> = []): PreflightResult {
+export function preflightOperations(operations: CanvasOperation[], existingElementIds: Iterable<string>, existingGroupIds: Iterable<string> = [], symbols: SymbolLibrary = {}): PreflightResult {
   const elementIds = new Set(existingElementIds);
   const groupIds = new Set(existingGroupIds);
+  // Symbols defined earlier in this same batch count, so defining and stamping in one call works.
+  const library: SymbolLibrary = { ...symbols };
   const conflicts: string[] = [];
   const missing: string[] = [];
   for (const operation of operations) {
+    if (operation.type === "define_symbol") library[operation.name] = operation.d;
     for (const target of operationTargetIds(operation)) if (!elementIds.has(target) && !groupIds.has(target) && !missing.includes(target)) missing.push(target);
-    for (const created of plannedElementIds(operation)) {
+    for (const created of plannedElementIds(operation, library)) {
       if (elementIds.has(created)) { if (!conflicts.includes(created)) conflicts.push(created); }
       else elementIds.add(created);
     }
