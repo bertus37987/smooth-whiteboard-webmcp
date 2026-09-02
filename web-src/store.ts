@@ -3,7 +3,7 @@ import { beautifyStroke } from "../src/strokes";
 import { measureTextBlock } from "./measure";
 import { fitSubpaths, parseSvgPath } from "./path";
 import { AgentStyle } from "./compositions";
-import { Bounds, CanvasOperation, ConnectorLanes, ConnectorRoute, WhiteboardDocument, annotationGeometry, boardBounds, cloneBoard, connectionRoute, elementSignature, emptyBoard, estimateTextHeight, iconSegments, migrateBoard, operationElement, polygonShapePoints, scaleElement, translateElement } from "./model";
+import { Bounds, CanvasOperation, ConnectorLanes, ConnectorRoute, WhiteboardDocument, CONNECTOR_LABEL_PADDING, annotationGeometry, boardBounds, boundsOverlapArea, cloneBoard, connectionRoute, elementSignature, emptyBoard, estimateTextHeight, iconSegments, migrateBoard, operationElement, polygonShapePoints, scaleElement, translateElement } from "./model";
 
 const STORAGE_KEY = "smooth-whiteboard-v3";
 const LEGACY_STORAGE_KEY = "smooth-whiteboard-v1";
@@ -534,30 +534,42 @@ export class BoardStore extends EventTarget {
       if (connection.labelId) {
         const label = this.document.elements.find((element) => element.id === connection.labelId);
         if (label?.type === "text") {
-          // Park the label beside the longest straight run, and keep looking until it is clear of
-          // everything else: a label sitting on a card is the thing that makes diagrams unreadable.
-          let best = { from: route[0], to: route[1] ?? route[0], length: -1 };
-          for (let index = 1; index < route.length; index += 1) {
-            const length = Math.hypot(route[index].x - route[index - 1].x, route[index].y - route[index - 1].y);
-            if (length > best.length) best = { from: route[index - 1], to: route[index], length };
-          }
-          const dx = best.to.x - best.from.x; const dy = best.to.y - best.from.y; const span = Math.hypot(dx, dy) || 1;
-          const normal = { x: -dy / span, y: dx / span };
-          const height = label.height ?? label.fontSize * 1.2;
-          const place = (t: number, side: number, gap: number): { x: number; baseline: number } => {
-            const point = { x: best.from.x + dx * t, y: best.from.y + dy * t };
-            return { x: point.x + normal.x * gap * side - label.width / 2, baseline: point.y + normal.y * gap * side + label.fontSize / 2 };
-          };
-          const preferred = normal.y > 0 ? -1 : 1;
+          // A two-letter label should claim two letters of space: a fixed block makes it collide
+          // with everything and puts the visible word off the line it belongs to.
+          const measured = measureTextBlock({ text: label.text, width: 260, fontSize: label.fontSize, fontFamily: label.fontFamily });
+          label.width = Math.max(24, Math.min(260, Math.ceil(measured.longestLine) + 10));
+          label.height = measured.height; label.textAlign = "center";
+          const height = label.height;
+
+          // The boxes this arrow connects are obstacles for the label even though the route has to
+          // touch them: a word sitting on a card is the thing that makes a diagram unreadable.
+          const obstacles = [...blockers, ...placedLabels, elementBounds(from), elementBounds(to)];
+          // The box to keep clear is the chip the renderer draws, not just the letters in it.
+          const boxOf = (candidate: { x: number; baseline: number }): Bounds => ({ minX: candidate.x - CONNECTOR_LABEL_PADDING.x, minY: candidate.baseline - label.fontSize - CONNECTOR_LABEL_PADDING.y, maxX: candidate.x + label.width + CONNECTOR_LABEL_PADDING.x, maxY: candidate.baseline - label.fontSize + height + CONNECTOR_LABEL_PADDING.y });
+          const hits = (box: Bounds): boolean => obstacles.some((other) => box.minX < other.maxX && box.maxX > other.minX && box.minY < other.maxY && box.maxY > other.minY);
+          const spill = (box: Bounds): number => obstacles.reduce((total, other) => total + boundsOverlapArea(box, other), 0);
+
+          // Every straight run of the route is a candidate, longest first, then out to the sides.
+          const runs = route.slice(1).map((point, index) => ({ from: route[index], to: point, length: Math.hypot(point.x - route[index].x, point.y - route[index].y) }))
+            .sort((left, right) => right.length - left.length);
           const base = label.fontSize * .9 + 8;
-          const candidates = [
-            place(.5, preferred, base), place(.5, -preferred, base),
-            place(.28, preferred, base), place(.72, preferred, base),
-            place(.5, preferred, base + height), place(.5, -preferred, base + height)
-          ];
-          const boxOf = (candidate: { x: number; baseline: number }): Bounds => ({ minX: candidate.x, minY: candidate.baseline - label.fontSize, maxX: candidate.x + label.width, maxY: candidate.baseline - label.fontSize + height });
-          const hits = (box: Bounds, others: Bounds[]): boolean => others.some((other) => box.minX < other.maxX && box.maxX > other.minX && box.minY < other.maxY && box.maxY > other.minY);
-          const clear = candidates.find((candidate) => !hits(boxOf(candidate), [...blockers, ...placedLabels])) ?? candidates[0];
+          const candidates: Array<{ x: number; baseline: number }> = [];
+          for (const run of runs) {
+            const dx = run.to.x - run.from.x; const dy = run.to.y - run.from.y; const span = run.length || 1;
+            const normal = { x: -dy / span, y: dx / span };
+            const preferred = normal.y > 0 ? -1 : 1;
+            for (const gap of [base, base + height, base + height * 2, base + height * 3]) {
+              for (const t of [.5, .32, .68, .16, .84]) {
+                for (const side of [preferred, -preferred]) {
+                  const point = { x: run.from.x + dx * t, y: run.from.y + dy * t };
+                  candidates.push({ x: point.x + normal.x * gap * side - label.width / 2, baseline: point.y + normal.y * gap * side + label.fontSize / 2 });
+                }
+              }
+            }
+          }
+          // Nothing free anywhere: take the least bad spot rather than the first one in the list.
+          const clear = candidates.find((candidate) => !hits(boxOf(candidate)))
+            ?? candidates.reduce((best, candidate) => spill(boxOf(candidate)) < spill(boxOf(best)) ? candidate : best, candidates[0]);
           label.x = clear.x; label.baseline = clear.baseline;
           placedLabels.push(boxOf(clear));
         }

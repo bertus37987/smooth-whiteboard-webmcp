@@ -1,7 +1,7 @@
 import { PageElement, elementBounds } from "../src/document";
 import { InkPoint } from "../src/strokes";
 import { cachedImage, drawBoardElement } from "../src/rendering";
-import { AgentMarkerAnnotation, Camera, ExplanationSequence, boardBounds } from "./model";
+import { AgentMarkerAnnotation, CONNECTOR_LABEL_PADDING, Camera, ExplanationSequence, boardBounds } from "./model";
 
 export type SelectionHandle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
 
@@ -165,7 +165,7 @@ export class BoardRenderer {
   }
 
   private drawConnectionLabel(context: CanvasRenderingContext2D, element: Extract<PageElement, { type: "text" }>): void {
-    const box = elementBounds(element); const padX = 8; const padY = 5; const radius = 9;
+    const box = elementBounds(element); const padX = CONNECTOR_LABEL_PADDING.x; const padY = CONNECTOR_LABEL_PADDING.y; const radius = 9;
     const x = box.minX - padX; const y = box.minY - padY; const width = box.maxX - box.minX + padX * 2; const height = box.maxY - box.minY + padY * 2;
     context.save(); context.fillStyle = "rgba(255,255,255,.98)"; context.strokeStyle = "rgba(8,8,8,.16)"; context.lineWidth = 1 / this.camera.zoom;
     context.shadowColor = "rgba(8,8,8,.08)"; context.shadowBlur = 10 / this.camera.zoom; context.beginPath(); context.roundRect(x, y, width, height, radius); context.fill();

@@ -3,7 +3,7 @@ import { CollaborationSession, CollaborationView } from "../web-src/collaboratio
 import { BoardStore } from "../web-src/store";
 import { PageElement, elementBounds } from "../src/document";
 import { readFileSync } from "node:fs";
-import { Bounds, CanvasOperation, annotationKinds, boardBounds, boundsOverlapArea, iconNames, isCanvasOperation, lintBoard, migrateBoard, plannedElementIds, resolveGestureElements } from "../web-src/model";
+import { Bounds, CONNECTOR_LABEL_PADDING, CanvasOperation, annotationKinds, boardBounds, boundsOverlapArea, iconNames, isCanvasOperation, lintBoard, migrateBoard, plannedElementIds, resolveGestureElements } from "../web-src/model";
 import { InkPoint } from "../src/strokes";
 import { registerWhiteboardTools } from "../web-src/webmcp";
 
@@ -814,6 +814,34 @@ async function main(): Promise<void> {
       }
     }
     assert.deepEqual(lintBoard(test.store.document).filter((issue) => issue.code === "overlap"), [], "and nothing landed on top of anything else");
+  }
+
+  /* TEST 37 - a connector label never sits on the boxes its own arrow connects. */
+  {
+    const test = harness();
+    test.session.submit({ promptText: "Decision", instructionInk: [] });
+    const lease = await claim(test);
+    await test.session.compose({ kind: "flowchart", id: "flow", title: "Wie ein Cache antwortet",
+      nodes: [{ id: "req", label: "Anfrage" }, { id: "hit", label: "Im Cache?", role: "decision" }, { id: "serve", label: "Sofort ausliefern" }, { id: "origin", label: "Vom Ursprung holen" }],
+      edges: [{ fromId: "req", toId: "hit" }, { fromId: "hit", toId: "serve", label: "ja" }, { fromId: "hit", toId: "origin", label: "nein" }] }, undefined, lease.leaseToken);
+
+    const labels = ["ja", "nein"].map((text) => test.store.document.elements.find((element) => element.type === "text" && element.text === text)!);
+    const cards = test.store.document.elements.filter((element) => element.type === "shape" && element.kind !== "arrow" && element.semanticRole !== "frame");
+    // What has to stay clear is the chip the renderer paints, not just the letters inside it.
+    const chip = (element: PageElement): Bounds => {
+      const box = elementBounds(element);
+      return { minX: box.minX - CONNECTOR_LABEL_PADDING.x, minY: box.minY - CONNECTOR_LABEL_PADDING.y, maxX: box.maxX + CONNECTOR_LABEL_PADDING.x, maxY: box.maxY + CONNECTOR_LABEL_PADDING.y };
+    };
+    for (const label of labels) {
+      assert.ok(label.type === "text" && label.width < 60, "a short label claims the width of its word, not a fixed block");
+      for (const card of cards) {
+        assert.equal(boundsOverlapArea(chip(label), elementBounds(card)), 0,
+          `"${label.type === "text" ? label.text : ""}" does not sit on ${card.id}, chip and all`);
+      }
+    }
+    for (const [index, label] of labels.entries()) for (const other of labels.slice(index + 1)) {
+      assert.equal(boundsOverlapArea(chip(label), chip(other)), 0, "and two labels do not stack either");
+    }
   }
 
   console.log("collaboration tests: ok");

@@ -565,6 +565,9 @@ export function connectionRoute(from: PageElement, to: PageElement, route: Conne
   return curved;
 }
 
+/** The chip drawn behind a connector label. Placement has to reserve it, or the chip clips a card. */
+export const CONNECTOR_LABEL_PADDING = { x: 8, y: 5 };
+
 /** Distance between two connectors that would otherwise share the same corridor. */
 export const LANE_GAP = 24;
 
