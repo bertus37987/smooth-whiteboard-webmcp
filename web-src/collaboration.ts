@@ -1,11 +1,14 @@
 import { PageElement } from "../src/document";
 import { InkPoint } from "../src/strokes";
 import { VisualCompositionInput, composeVisualDetailed, isVisualComposition } from "./compositions";
+import { Repair } from "./repair";
+import { spacing } from "./theme";
 import {
   Bounds, CanvasOperation, CollaborationTurn, ContextScope, DeletedRegion, PriorityRegion, SessionState, TurnCapabilities,
   boardBounds, boundsForPoints, boundsIntersect, elementSummary, isCanvasOperation, lintBoard, operationTargetIds,
   preflightOperations, resolveGestureElements
 } from "./model";
+import { compositionBounds, translateComposition } from "./layout";
 import { BoardStore, ContentMutation } from "./store";
 import { designSystem } from "./theme";
 
@@ -409,11 +412,29 @@ export class CollaborationSession {
   async compose(input: VisualCompositionInput, baseRevision?: number, leaseToken?: string, signal?: AbortSignal): Promise<AgentResponse> {
     const denied = this.requireWritable(leaseToken); if (denied) return denied;
     if (!isVisualComposition(input)) return this.respond({ ok: false, error: "invalid_visual", instruction: "Use one supported visual kind and provide valid nodes, sections, steps, axes or series." });
-    const { operations, repairs } = composeVisualDetailed(input);
+    const composed = composeVisualDetailed(input);
+    const { operations, repairs } = this.placeComposition(input, composed.operations, composed.repairs);
     if (!operations.length) return this.respond({ ok: false, error: "empty_visual", instruction: "The visual produced no canvas content. Provide nodes, sections, steps or series." });
     const applied = await this.apply(operations, baseRevision, leaseToken, signal, 240);
     // Tell the agent what the layout repair had to change, so its next hand-placed edit is better.
     return repairs.length ? { ...applied, repairs } : applied;
+  }
+
+  /**
+   * A visual without coordinates is dropped into free canvas under whatever is already there, so a
+   * composition can never land on the human's drawing. Explicit x/y always wins.
+   */
+  private placeComposition(input: VisualCompositionInput, operations: CanvasOperation[], repairs: Repair[]): { operations: CanvasOperation[]; repairs: Repair[] } {
+    if (input.x !== undefined || input.y !== undefined) return { operations, repairs };
+    const board = boardBounds(this.store.document.elements);
+    const composed = compositionBounds(operations);
+    if (!board || !composed) return { operations, repairs };
+    const dx = board.minX - composed.minX;
+    const dy = board.maxY + spacing.xl - composed.minY;
+    return {
+      operations: translateComposition(operations, dx, dy),
+      repairs: [...repairs, { code: "placed", elementIds: [], action: `moved into free space below the existing board (dx ${Math.round(dx)}, dy ${Math.round(dy)})` }]
+    };
   }
 
   complete(summary: string, leaseToken?: string): AgentResponse {

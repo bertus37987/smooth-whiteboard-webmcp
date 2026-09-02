@@ -23,7 +23,9 @@ This project turns the existing Smooth Handwriting vector canvas into a standalo
 - Alternating Human ↔ Agent turns with a wait tool, lease token and stale-revision protection
 - Separate red glowing agent markers with a hover explanation until the contribution is accepted or undone
 - Agent typography (sans, serif, mono and handwriting roles), text alignment/weight/style, text highlighting, filled shapes, rounded corners, line styles and one- or two-headed arrows
-- Structured editable visuals: study notes, explainers, timelines, comparisons, hierarchies, UI wireframes, flowcharts, mindmaps, research briefs, calculations and plots
+- Structured editable visuals: sequence diagrams, kanban boards, roadmaps, study notes, explainers, timelines, comparisons, hierarchies, UI wireframes, flowcharts, mindmaps, research briefs, calculations and plots
+- Shapes that match the subject: a process between parties becomes actors with lifelines and numbered messages, work in flight becomes columns of draggable cards, a plan becomes lanes with duration bars and milestones
+- A composed visual places itself in free canvas instead of landing on what is already on the board, and long card text moves into the guided narration where the board already shows it
 - Every generated card, note and page is measured against the real font, so agent layouts do not overflow their boxes
 - Hand-drawn sketch rendering with a deterministic wobble, identical on screen and in PNG/SVG/PDF export
 - Style follows the context: what the agent parents to an artboard comes out clean and typeset, what it puts on the open canvas comes out hand-drawn, and either default can be overridden per object
@@ -53,7 +55,7 @@ editing (move, resize, rewrite, restyle, lock, reorder, group, re-parent, duplic
 (`align`, `distribute`, `auto_layout`, `fit_to_content`) and teaching (`set_explanation_sequence`,
 `present_step`). Its answer carries `lintIssues` for the elements just touched, so the agent can fix an
 overflow, an overlap, an unlabelled control or a contrast problem inside the same turn.
-`inspect_whiteboard` additionally returns `designSystem` (the shared palette, accents, spacing and type scale, plus guidance on when to use colour and when drawing comes out clean) and
+The composer picks layout, colour and spacing; the agent supplies content. `inspect_whiteboard` additionally returns `designSystem` (the shared palette, accents, spacing and type scale, plus guidance on when to use colour and when drawing comes out clean) and
 `activePresentation` (the guided-explanation step the human is looking at).
 
 The board state—not an agent's previous output—is always the source of truth. Agent-created items are normal canvas items, so the human can move, resize, rewrite or remove them before the next inspection.

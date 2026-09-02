@@ -3,8 +3,10 @@ import { readFileSync, statSync } from "node:fs";
 import { elementBounds } from "../src/document";
 import { arrowHeadPoints, textFontFamilies, wrapTextLines } from "../src/rendering";
 import { BoardStore } from "../web-src/store";
-import { CanvasOperation, lintBoard } from "../web-src/model";
-import { VisualCompositionInput, VisualKind, composeVisual, composeVisualDetailed } from "../web-src/compositions";
+import { CanvasOperation, boundsOverlapArea, lintBoard } from "../web-src/model";
+import { VisualCompositionInput, VisualKind, composeVisual, composeVisualDetailed, splitDetail, visualKinds } from "../web-src/compositions";
+import { CollaborationSession } from "../web-src/collaboration";
+import { connectionRoute, routeBlocked } from "../web-src/model";
 import { exportPages, makeSvg } from "../web-src/export";
 import { measureTextBlock } from "../web-src/measure";
 import { repairComposition } from "../web-src/repair";
@@ -15,6 +17,8 @@ Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
   setItem: (key: string, value: string) => storage.set(key, value),
   removeItem: (key: string) => storage.delete(key)
 } });
+
+const box = (id: string, x: number, y: number, width = 120, height = 90): CanvasOperation => ({ type: "create_shape", id, kind: "rectangle", x, y, width, height });
 
 function boardFrom(operations: CanvasOperation[]): BoardStore {
   storage.clear();
@@ -27,13 +31,18 @@ function boardFrom(operations: CanvasOperation[]): BoardStore {
 /* ------------------------- adversarial fixtures ------------------------- */
 
 const LONG = "An unusually long label that keeps going well past the point where any layout would like it to stop, so the composer has to cope with a paragraph where a short caption was expected.";
-const kinds: VisualKind[] = ["flowchart", "mindmap", "ui_wireframe", "ui_mockup", "research_report", "math_steps", "plot", "study_note", "timeline", "comparison", "hierarchy", "visual_explainer", "guided_explainer"];
+const kinds: VisualKind[] = visualKinds;
 
 function fixture(kind: VisualKind, index: number): VisualCompositionInput {
   const many = Array.from({ length: 15 }, (_, node) => ({ id: `n${node}`, label: node % 3 === 0 ? LONG : `Node ${node}`, detail: node % 2 === 0 ? LONG : undefined }));
   const sections = Array.from({ length: 6 }, (_, section) => ({ heading: section % 2 === 0 ? LONG : `Heading ${section}`, body: section % 3 === 0 ? "" : LONG }));
   return {
     kind, id: `torture-${index}`, title: LONG,
+    edges: many.slice(1).map((node, edge) => ({ fromId: many[edge].id, toId: node.id, label: edge % 4 === 0 ? LONG : `step ${edge}`, detail: edge % 3 === 0 ? LONG : undefined })),
+    columns: Array.from({ length: 5 }, (_, column) => ({ name: column % 2 === 0 ? LONG : `Column ${column}`, cards: Array.from({ length: column === 0 ? 12 : 2 }, (_, card) => ({ label: card % 2 === 0 ? LONG : `Card ${card}`, detail: card === 0 ? LONG : undefined })) })),
+    lanes: ["Alpha", LONG, "Gamma"],
+    periods: ["W1", "W2", "W3"],
+    items: [{ lane: "Alpha", label: LONG, start: 0, span: 3 }, { lane: LONG, label: "Bar", start: 1 }, { lane: "Gamma", label: "Ship", start: 2, milestone: true }, { lane: "Alpha", label: "Out of range", start: 9, span: 4 }],
     width: index % 2 === 0 ? 320 : undefined,
     nodes: many, sections,
     steps: [{ expression: "x^2 + 2x + 1 = 0", explanation: LONG }, { expression: "(x + 1)^2 = 0" }],
@@ -155,6 +164,133 @@ async function main(): Promise<void> {
       assert.ok(svg.includes(local(barbs.left)) && svg.includes(local(barbs.right)), "the exported head uses the shared geometry");
       assert.ok(!svg.includes("<polygon points=\"" + local(arrow.points[1])), "the head is stroked like on the canvas, not filled");
     }
+  }
+
+  /* ------------------------ round three shapes ------------------------ */
+
+  /* A sequence reads top to bottom, and its labels never sit on an actor. */
+  {
+    const composed = composeVisualDetailed({ kind: "sequence", id: "seq", title: "How HTTP works",
+      nodes: [{ id: "browser", label: "Browser" }, { id: "server", label: "Server" }],
+      edges: [
+        { fromId: "browser", toId: "server", label: "GET /index.html", detail: "Method, path and headers." },
+        { fromId: "server", toId: "server", label: "route and render" },
+        { fromId: "server", toId: "browser", label: "200 OK" }
+      ] });
+    const store = boardFrom(composed.operations);
+    assert.deepEqual(lintBoard(store.document).filter((issue) => issue.code === "overlap" || issue.code === "text-overflow"), [], "a sequence composes clean");
+    const messages = [0, 1, 2].map((index) => store.document.elements.find((element) => element.id === `seq-msg-${index}`)!);
+    const rows = messages.map((message) => elementBounds(message).minY);
+    assert.ok(rows[0] < rows[1] && rows[1] < rows[2], "messages run down the page in the order they were given");
+    const actors = ["seq-browser", "seq-server"].map((id) => elementBounds(store.document.elements.find((element) => element.id === id)!));
+    for (const index of [0, 1, 2]) {
+      const label = elementBounds(store.document.elements.find((element) => element.id === `seq-msg-${index}-label`)!);
+      for (const actor of actors) assert.equal(boundsOverlapArea(label, actor), 0, `message ${index} label keeps clear of the actor cards`);
+    }
+    const sequence = composed.operations.find((operation): operation is Extract<CanvasOperation, { type: "set_explanation_sequence" }> => operation.type === "set_explanation_sequence")!;
+    assert.equal(sequence.sequence.steps.length, 3, "every message is a narration step");
+    assert.equal(sequence.sequence.steps[0].body, "Method, path and headers.", "edge detail becomes the narration");
+    const back = store.document.elements.find((element) => element.id === "seq-msg-2")!;
+    assert.ok(back.type === "shape" && back.points[0].x > back.points.at(-1)!.x, "a reply points back the way it came");
+  }
+
+  /* Board cards live inside their own column. */
+  {
+    const composed = composeVisual({ kind: "board", id: "brd", title: "This week", columns: [
+      { name: "To do", cards: [{ label: "Roadmap shape" }, { label: "Connector labels", detail: "Off the card edge" }] },
+      { name: "Doing", cards: [{ label: "Sequence shape" }] },
+      { name: "Done", cards: [{ label: "Fonts" }, { label: "Lasso" }] }
+    ] });
+    const store = boardFrom(composed);
+    assert.deepEqual(lintBoard(store.document).filter((issue) => issue.code === "overlap" || issue.code === "text-overflow"), [], "a board composes clean");
+    const columns = [0, 1, 2].map((index) => elementBounds(store.document.elements.find((element) => element.id === `brd-column-${index}-border`)!));
+    for (const [index, column] of columns.entries()) for (const other of columns.slice(index + 1)) assert.equal(boundsOverlapArea(column, other), 0, "columns do not overlap");
+    for (const [column, cards] of [[0, 2], [1, 1], [2, 2]] as const) {
+      for (let card = 0; card < cards; card += 1) {
+        const box = elementBounds(store.document.elements.find((element) => element.id === `brd-card-${column}-${card}-card`)!);
+        const frame = columns[column];
+        assert.ok(box.minX >= frame.minX && box.maxX <= frame.maxX && box.maxY <= frame.maxY, `card ${column}/${card} stays in its column`);
+      }
+    }
+    const header = store.document.elements.find((element) => element.id === "brd-column-0-title");
+    assert.ok(header?.type === "text" && header.text.includes("2"), "the column header carries its card count");
+  }
+
+  /* Roadmap bars land in the right lane and period, and milestones are diamonds. */
+  {
+    const composed = composeVisual({ kind: "roadmap", id: "rm", title: "Next month",
+      lanes: ["Agent", "Canvas"], periods: ["W1", "W2", "W3", "W4"],
+      items: [{ lane: "Agent", label: "Sequence", start: 0, span: 2 }, { lane: "Canvas", label: "Routing", start: 2, span: 1 }, { lane: "Canvas", label: "Demo", start: 3, milestone: true }] });
+    const store = boardFrom(composed);
+    assert.deepEqual(lintBoard(store.document).filter((issue) => issue.code === "overlap" || issue.code === "text-overflow"), [], "a roadmap composes clean");
+    const bar = elementBounds(store.document.elements.find((element) => element.id === "rm-item-0")!);
+    const second = elementBounds(store.document.elements.find((element) => element.id === "rm-item-1")!);
+    assert.ok(bar.maxY <= second.minY, "the first lane sits above the second");
+    assert.ok(bar.maxX - bar.minX > second.maxX - second.minX, "a two-period bar is wider than a one-period bar");
+    const milestone = store.document.elements.find((element) => element.id === "rm-item-2")!;
+    assert.equal(milestone.type === "shape" && milestone.kind, "polygon", "a milestone is a diamond, which is an editable polygon");
+    assert.ok(second.maxX <= elementBounds(milestone).minX + 1, "the milestone comes after the bar before it");
+  }
+
+  /* A composition with no coordinates is dropped into free space, never onto existing work. */
+  {
+    storage.clear();
+    const store = new BoardStore();
+    const session = new CollaborationSession(store);
+    const build = async (id: string): Promise<void> => {
+      session.submit({ promptText: "draw", instructionInk: [] });
+      const claimed = await session.waitForTurn(50);
+      await session.compose({ kind: "board", id, title: id, columns: [{ name: "Work", cards: [{ label: "One" }, { label: "Two" }] }] }, undefined, String(claimed.leaseToken));
+      session.complete("done", String(claimed.leaseToken));
+      session.accept();
+    };
+    await build("first");
+    await build("second");
+    const first = elementBounds(store.document.elements.find((element) => element.id === "first-column-0-border")!);
+    const second = elementBounds(store.document.elements.find((element) => element.id === "second-column-0-border")!);
+    assert.equal(boundsOverlapArea(first, second), 0, "the second composition does not land on the first");
+    assert.ok(second.minY > first.maxY, "it goes below what was already there");
+    assert.deepEqual(lintBoard(store.document).filter((issue) => issue.code === "overlap"), [], "and the board stays clean");
+  }
+
+  /* Long detail is split: headline on the card, the rest in the narration. */
+  {
+    const long = "Every request stands alone and carries everything the server needs. Cookies, tokens and caches are what make a series of requests feel like a session.";
+    const split = splitDetail(long);
+    assert.ok(split.summary!.length < long.length, "the card gets a headline");
+    assert.equal(split.body, long, "the narration keeps the whole thing");
+    const composed = composeVisualDetailed({ kind: "guided_explainer", id: "split", title: "Stateless",
+      nodes: [{ id: "state", label: "Stateless by design", detail: long }] });
+    const note = composed.operations.find((operation): operation is Extract<CanvasOperation, { type: "create_note" }> => operation.type === "create_note")!;
+    const sequence = composed.operations.find((operation): operation is Extract<CanvasOperation, { type: "set_explanation_sequence" }> => operation.type === "set_explanation_sequence")!;
+    assert.ok(note.text.length < long.length, "the card is not a wall of prose");
+    assert.equal(sequence.sequence.steps[0].body, long, "the full text survives as narration");
+  }
+
+  /* A wordy card is reported rather than rewritten, for the shapes that have no narration. */
+  {
+    const store = boardFrom([{ type: "create_note", id: "wordy", x: 0, y: 0, width: 320, text: "x".repeat(300) }]);
+    assert.ok(lintBoard(store.document).some((issue) => issue.code === "wordy-card"), "a paragraph on a card is reported");
+  }
+
+  /* Connectors go around a box, and their labels sit beside the line. */
+  {
+    const store = boardFrom([
+      box("from", 0, 0, 120, 90),
+      box("blocker", 200, 0, 120, 90),
+      box("to", 400, 0, 120, 90)
+    ]);
+    const [from, blocker, to] = ["from", "blocker", "to"].map((id) => store.document.elements.find((element) => element.id === id)!);
+    const obstacles = [elementBounds(blocker)];
+    assert.equal(routeBlocked(connectionRoute(from, to, "orthogonal"), obstacles), true, "the direct route really is blocked");
+    assert.equal(routeBlocked(connectionRoute(from, to, "orthogonal", obstacles), obstacles), false, "so the connector goes around it");
+
+    store.applyOperation({ type: "connect", id: "edge", fromId: "from", toId: "to", label: "sends", route: "orthogonal" }, "agent");
+    store.changed();
+    const label = store.document.elements.find((element) => element.type === "text" && element.text === "sends")!;
+    const arrow = store.document.elements.find((element) => element.id === "edge")!;
+    assert.equal(boundsOverlapArea(elementBounds(label), elementBounds(blocker)), 0, "the label does not sit on the box in the middle");
+    assert.ok(arrow.type === "shape" && arrow.points.length >= 2);
   }
 
   /* ------------------------- bundled fonts ------------------------- */

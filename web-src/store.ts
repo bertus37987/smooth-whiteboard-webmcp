@@ -367,15 +367,37 @@ export class BoardStore extends EventTarget {
         this.document.agentElementIds = this.document.agentElementIds.filter((id) => !removeIds.has(id));
         delete connections[arrowId]; continue;
       }
-      const route = connectionRoute(from, to, connection.route ?? "straight"); arrow.points = route;
+      const blockers = this.document.elements.filter((element) => element.id !== arrowId && element.id !== from.id && element.id !== to.id && element.id !== connection.labelId && element.type !== "text" && !(element.type === "shape" && (element.kind === "arrow" || element.kind === "line")) && !element.artboard).map((element) => elementBounds(element));
+      const route = connectionRoute(from, to, connection.route ?? "straight", blockers); arrow.points = route;
       if (connection.labelId) {
         const label = this.document.elements.find((element) => element.id === connection.labelId);
         if (label?.type === "text") {
-          const start = route[0]; const end = route.at(-1)!; const middle = route[Math.floor(route.length / 2)];
-          const distance = Math.hypot(end.x - start.x, end.y - start.y);
-          const offsetY = distance < label.width + 40 ? 34 : 0;
-          label.x = middle.x - label.width / 2;
-          label.baseline = middle.y + label.fontSize / 2 - offsetY;
+          // Park the label beside the longest straight run, and keep looking until it is clear of
+          // everything else: a label sitting on a card is the thing that makes diagrams unreadable.
+          let best = { from: route[0], to: route[1] ?? route[0], length: -1 };
+          for (let index = 1; index < route.length; index += 1) {
+            const length = Math.hypot(route[index].x - route[index - 1].x, route[index].y - route[index - 1].y);
+            if (length > best.length) best = { from: route[index - 1], to: route[index], length };
+          }
+          const dx = best.to.x - best.from.x; const dy = best.to.y - best.from.y; const span = Math.hypot(dx, dy) || 1;
+          const normal = { x: -dy / span, y: dx / span };
+          const height = label.height ?? label.fontSize * 1.2;
+          const place = (t: number, side: number, gap: number): { x: number; baseline: number } => {
+            const point = { x: best.from.x + dx * t, y: best.from.y + dy * t };
+            return { x: point.x + normal.x * gap * side - label.width / 2, baseline: point.y + normal.y * gap * side + label.fontSize / 2 };
+          };
+          const preferred = normal.y > 0 ? -1 : 1;
+          const base = label.fontSize * .9 + 8;
+          const candidates = [
+            place(.5, preferred, base), place(.5, -preferred, base),
+            place(.28, preferred, base), place(.72, preferred, base),
+            place(.5, preferred, base + height), place(.5, -preferred, base + height)
+          ];
+          const clear = candidates.find((candidate) => {
+            const box = { minX: candidate.x, minY: candidate.baseline - label.fontSize, maxX: candidate.x + label.width, maxY: candidate.baseline - label.fontSize + height };
+            return !blockers.some((blocker) => box.minX < blocker.maxX && box.maxX > blocker.minX && box.minY < blocker.maxY && box.maxY > blocker.minY);
+          }) ?? candidates[0];
+          label.x = clear.x; label.baseline = clear.baseline;
         }
       }
     }

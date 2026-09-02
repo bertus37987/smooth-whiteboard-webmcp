@@ -2,7 +2,7 @@ import { Bounds, CanvasOperation, boundsIntersect, boundsOverlapArea, tableCellI
 import { measureTextBlock } from "./measure";
 import { spacing } from "./theme";
 
-export type RepairCode = "snapped" | "grew-container" | "widened-ellipse" | "moved-apart" | "grew-frame";
+export type RepairCode = "snapped" | "grew-container" | "widened-ellipse" | "moved-apart" | "grew-frame" | "placed";
 export interface Repair { code: RepairCode; elementIds: string[]; action: string }
 export interface RepairedComposition { operations: CanvasOperation[]; repairs: Repair[] }
 
@@ -145,5 +145,5 @@ export function repairComposition(operations: CanvasOperation[]): RepairedCompos
     }
   }
 
-  return { operations: repaired, repairs: repairs.filter((repair) => repair.elementIds.some(Boolean)) };
+  return { operations: repaired, repairs: repairs.filter((repair) => repair.elementIds.some(Boolean) || repair.code === "placed") };
 }

@@ -2,8 +2,10 @@ import { CanvasOperation } from "./model";
 import { TextBlock, measureTextBlock } from "./measure";
 import { accentTints, accents, palette, radius, spacing, typeScale } from "./theme";
 import { Repair, repairComposition } from "./repair";
+import { headerWidth, laneLayout } from "./layout";
 
-export type VisualKind = "flowchart" | "mindmap" | "ui_wireframe" | "ui_mockup" | "research_report" | "math_steps" | "plot" | "study_note" | "timeline" | "comparison" | "hierarchy" | "visual_explainer" | "guided_explainer";
+export type VisualKind = "flowchart" | "mindmap" | "ui_wireframe" | "ui_mockup" | "research_report" | "math_steps" | "plot" | "study_note" | "timeline" | "comparison" | "hierarchy" | "visual_explainer" | "guided_explainer" | "sequence" | "board" | "roadmap";
+export const visualKinds: VisualKind[] = ["flowchart", "mindmap", "ui_wireframe", "ui_mockup", "research_report", "math_steps", "plot", "study_note", "timeline", "comparison", "hierarchy", "visual_explainer", "guided_explainer", "sequence", "board", "roadmap"];
 
 export interface VisualNodeInput {
   id: string;
@@ -17,7 +19,11 @@ export interface VisualNodeInput {
   height?: number;
 }
 
-export interface VisualEdgeInput { fromId: string; toId: string; label?: string }
+export interface VisualEdgeInput { fromId: string; toId: string; label?: string; detail?: string }
+/** A kanban column and its cards. */
+export interface VisualColumnInput { name: string; cards: Array<{ label: string; detail?: string; accent?: string }> }
+/** One bar or milestone on a roadmap, positioned by period index. */
+export interface VisualItemInput { lane: string; label: string; start: number; span?: number; milestone?: boolean }
 export interface VisualSectionInput { heading: string; body: string }
 export interface VisualStepInput { expression: string; explanation?: string }
 export interface VisualSeriesInput { label?: string; color?: string; points: Array<{ x: number; y: number }> }
@@ -36,6 +42,10 @@ export interface VisualCompositionInput {
   steps?: VisualStepInput[];
   axes?: { xMin: number; xMax: number; yMin: number; yMax: number; xLabel?: string; yLabel?: string };
   series?: VisualSeriesInput[];
+  columns?: VisualColumnInput[];
+  lanes?: string[];
+  periods?: string[];
+  items?: VisualItemInput[];
   presentationSteps?: Array<{ title: string; body?: string; focusIds: string[]; revealIds?: string[] }>;
   theme?: { background?: string; surface?: string; text?: string; accent?: string };
 }
@@ -46,13 +56,17 @@ const cleanId = (value: string): string => value.trim().replace(/[^a-zA-Z0-9_-]+
 
 export function isVisualComposition(value: unknown): value is VisualCompositionInput {
   if (!value || typeof value !== "object") return false; const input = value as Record<string, unknown>;
-  if (!["flowchart", "mindmap", "ui_wireframe", "ui_mockup", "research_report", "math_steps", "plot", "study_note", "timeline", "comparison", "hierarchy", "visual_explainer", "guided_explainer"].includes(String(input.kind))) return false;
+  if (!(visualKinds as string[]).includes(String(input.kind))) return false;
   if (![input.x, input.y, input.width, input.height].every(optionalFinite)) return false;
   if (input.nodes !== undefined && (!Array.isArray(input.nodes) || input.nodes.length > 40 || input.nodes.some((node) => !node || typeof node !== "object" || typeof node.id !== "string" || typeof node.label !== "string" || !optionalFinite(node.x) || !optionalFinite(node.y) || !optionalFinite(node.width) || !optionalFinite(node.height)))) return false;
   if (input.edges !== undefined && (!Array.isArray(input.edges) || input.edges.length > 80 || input.edges.some((edge) => !edge || typeof edge !== "object" || typeof edge.fromId !== "string" || typeof edge.toId !== "string"))) return false;
   if (input.sections !== undefined && (!Array.isArray(input.sections) || input.sections.length > 20 || input.sections.some((section) => !section || typeof section !== "object" || typeof section.heading !== "string" || typeof section.body !== "string"))) return false;
   if (input.steps !== undefined && (!Array.isArray(input.steps) || input.steps.length > 30 || input.steps.some((step) => !step || typeof step !== "object" || typeof step.expression !== "string"))) return false;
   if (input.series !== undefined && (!Array.isArray(input.series) || input.series.length > 8 || input.series.some((series) => !series || typeof series !== "object" || !Array.isArray(series.points) || series.points.length > 400 || series.points.some((point: Record<string, unknown>) => !point || !finite(point.x) || !finite(point.y))))) return false;
+  if (input.columns !== undefined && (!Array.isArray(input.columns) || input.columns.length > 8 || input.columns.some((column) => !column || typeof column !== "object" || typeof column.name !== "string" || !Array.isArray(column.cards) || column.cards.length > 30 || column.cards.some((card: Record<string, unknown>) => !card || typeof card.label !== "string")))) return false;
+  if (input.lanes !== undefined && (!Array.isArray(input.lanes) || input.lanes.length > 12 || input.lanes.some((lane) => typeof lane !== "string"))) return false;
+  if (input.periods !== undefined && (!Array.isArray(input.periods) || input.periods.length > 16 || input.periods.some((period) => typeof period !== "string"))) return false;
+  if (input.items !== undefined && (!Array.isArray(input.items) || input.items.length > 60 || input.items.some((item) => !item || typeof item !== "object" || typeof item.lane !== "string" || typeof item.label !== "string" || !finite(item.start) || (item.span !== undefined && !finite(item.span))))) return false;
   if (input.presentationSteps !== undefined && (!Array.isArray(input.presentationSteps) || input.presentationSteps.length > 40 || input.presentationSteps.some((step) => !step || typeof step !== "object" || typeof step.title !== "string" || !Array.isArray(step.focusIds) || step.focusIds.some((id: unknown) => typeof id !== "string")))) return false;
   return true;
 }
@@ -92,6 +106,18 @@ function gridRowHeights(nodes: VisualNodeInput[], columns: number, cardWidth: (n
 }
 
 /** Axis and legend labels are captions: one line, truncated rather than allowed to cover the plot. */
+/**
+ * A card carries the headline; anything longer belongs in the narration, which the explanation bar
+ * already shows. Nothing is lost, the board just stops being a wall of prose.
+ */
+export function splitDetail(detail: string | undefined, limit = 90): { summary?: string; body?: string } {
+  if (!detail) return {};
+  const trimmed = detail.trim(); if (!trimmed) return {};
+  if (trimmed.length <= limit) return { summary: trimmed, body: trimmed };
+  const sentence = /^(.{20,120}?[.!?])(\s|$)/.exec(trimmed);
+  return { summary: sentence ? sentence[1] : `${trimmed.slice(0, limit - 1).trimEnd()}…`, body: trimmed };
+}
+
 const caption = (text: string, limit = 34): string => text.length > limit ? `${text.slice(0, limit - 1).trimEnd()}…` : text;
 
 const rowOffset = (heights: number[], row: number, gap: number): number => heights.slice(0, row).reduce((total, height) => total + height + gap, 0);
@@ -284,7 +310,8 @@ function comparison(input: VisualCompositionInput, prefix: string): CanvasOperat
 function visualExplainer(input: VisualCompositionInput, prefix: string): CanvasOperation[] {
   const nodes = input.nodes ?? []; const x = input.x ?? -450; const y = input.y ?? -300; const width = input.width ?? 900;
   const columns = Math.min(3, Math.max(1, Math.ceil(Math.sqrt(nodes.length || 1)))); const cardWidth = (width - 70 - (columns - 1) * 28) / columns;
-  const ideaText = (node: VisualNodeInput): string => node.detail ? `${node.label}\n${node.detail}` : node.label;
+  // The card gets the headline plus one line; explanationSequence keeps the full text as narration.
+  const ideaText = (node: VisualNodeInput): string => { const summary = splitDetail(node.detail).summary; return summary ? `${node.label}\n${summary}` : node.label; };
   const heights: number[] = [];
   nodes.forEach((node, index) => { const row = Math.floor(index / columns); heights[row] = Math.max(heights[row] ?? 0, noteHeight(ideaText(node), cardWidth, undefined, 120)); });
   const explainerTitleHeight = measureTextBlock({ text: input.title ?? "Visual explanation", width: width - 36, fontSize: 28, fontWeight: 700, blockStyle: "heading-2", fontFamily: AGENT_FONT }).height;
@@ -294,6 +321,165 @@ function visualExplainer(input: VisualCompositionInput, prefix: string): CanvasO
   nodes.forEach((node, index) => { const row = Math.floor(index / columns); const px = x + 28 + (index % columns) * (cardWidth + 28); const py = y + ideasTop + rowOffset(heights, row, spacing.lg); operations.push({ type: "create_note", id: `${prefix}-idea-${index}`, x: px, y: py, width: cardWidth, height: heights[row], text: ideaText(node), fillColor: index === 0 ? palette.note : palette.surface, renderStyle: "sketch" }); });
   return operations;
 }
+
+/* ------------------------------------------------------------------ *
+ * Shapes that carry meaning: a conversation, work in flight, a plan.    *
+ * ------------------------------------------------------------------ */
+
+const LANE_PAD = spacing.lg;
+
+/**
+ * A conversation between actors: columns for the participants, one numbered arrow per message,
+ * time running downwards. This is what a process between two parties actually looks like.
+ */
+function sequence(input: VisualCompositionInput, prefix: string): CanvasOperation[] {
+  const actors = input.nodes ?? [];
+  if (!actors.length) return titleOperations(prefix, input.title ?? "Sequence", input.x ?? -520, input.y ?? -320, input.width ?? 900);
+  const messages = (input.edges ?? []).filter((edge) => actors.some((actor) => actor.id === edge.fromId) && actors.some((actor) => actor.id === edge.toId));
+  const x = input.x ?? -520; const y = input.y ?? -320;
+  const title = input.title ?? "Sequence";
+  const top = y + titleBlockHeight(title, input.width ?? 900) + spacing.lg;
+
+  const columns = actors.map((actor) => ({ label: actor.label, width: Math.max(headerWidth(actor.label, 210), cardMinimumWidth(actor)) }));
+  const headerHeight = Math.max(72, ...actors.map((actor) => cardHeight({ ...actor, detail: undefined }, columns[actors.indexOf(actor)].width, 72)));
+  const labelWidth = (message: VisualEdgeInput): number => Math.max(120, measureTextBlock({ text: message.label ?? "", width: 420, fontSize: typeScale.caption.fontSize, fontFamily: AGENT_FONT }).longestLine);
+  const rowHeights = messages.map((message) => Math.round(measureTextBlock({ text: message.label ?? "", width: 420, fontSize: typeScale.caption.fontSize, fontFamily: AGENT_FONT }).height + spacing.xl));
+  const layout = laneLayout({ x: x + LANE_PAD, y: top, columns, rowHeights: rowHeights.length ? rowHeights : [120], gap: spacing.xl, headerHeight, rowGap: spacing.sm });
+  const lifeline = (index: number): number => layout.columns[index].x + layout.columns[index].width / 2;
+  const bottom = layout.y + layout.height + spacing.lg;
+  // A self-message loops out to the right, so the frame has to be wide enough to hold it.
+  const selfReach = messages.some((message) => message.fromId === message.toId) ? 96 + spacing.lg : 0;
+  const frameWidth = Math.max(layout.width + LANE_PAD * 2, layout.columns.at(-1)!.x + layout.columns.at(-1)!.width / 2 + selfReach - x + LANE_PAD);
+
+  const operations: CanvasOperation[] = [
+    { type: "create_frame", id: `${prefix}-frame`, x, y, width: frameWidth, height: bottom - y + LANE_PAD, title, renderStyle: "sketch" }
+  ];
+  actors.forEach((actor, index) => {
+    const header = layout.columnHeader(index);
+    const accent = accents[index % accents.length];
+    operations.push(...cardOperations(prefix, { ...actor, detail: undefined }, header.minX, header.minY, header.maxX - header.minX, header.maxY - header.minY, false, accent));
+    operations.push({ type: "create_path", id: `${prefix}-life-${index}`, points: [{ x: lifeline(index), y: header.maxY + spacing.xs }, { x: lifeline(index), y: bottom }], smooth: false, color: palette.hairline, strokeWidth: 1.5 });
+  });
+
+  const steps: Array<{ id: string; title: string; body?: string; focusElementIds: string[]; revealElementIds: string[]; cameraBounds: { minX: number; minY: number; maxX: number; maxY: number } }> = [];
+  messages.forEach((message, index) => {
+    const from = actors.findIndex((actor) => actor.id === message.fromId);
+    const to = actors.findIndex((actor) => actor.id === message.toId);
+    const row = layout.rows[Math.min(index, layout.rows.length - 1)];
+    const lineY = row.y + row.height - spacing.md;
+    const text = `${index + 1}. ${message.label ?? ""}`.trim();
+    const ids: string[] = [];
+    if (from === to) {
+      // A message an actor sends to itself: out, down and back.
+      const start = lifeline(from); const reach = 96;
+      operations.push({ type: "create_path", id: `${prefix}-msg-${index}`, points: [{ x: start, y: lineY - 24 }, { x: start + reach, y: lineY - 24 }, { x: start + reach, y: lineY }, { x: start + 26, y: lineY }], smooth: false, color: palette.muted, strokeWidth: 2 });
+      operations.push({ type: "create_arrow", id: `${prefix}-msg-${index}-head`, from: { x: start + 26, y: lineY }, to: { x: start + 4, y: lineY }, color: palette.muted, strokeWidth: 2 });
+      operations.push({ type: "create_text", id: `${prefix}-msg-${index}-label`, x: start + spacing.sm, y: lineY - 34 - typeScale.caption.fontSize - spacing.xs, width: Math.max(160, labelWidth(message)), text, fontSize: typeScale.caption.fontSize, color: palette.muted });
+      ids.push(`${prefix}-msg-${index}`, `${prefix}-msg-${index}-label`);
+    } else {
+      const startX = lifeline(from); const endX = lifeline(to);
+      const forward = endX > startX;
+      operations.push({ type: "create_arrow", id: `${prefix}-msg-${index}`, from: { x: startX + (forward ? 6 : -6), y: lineY }, to: { x: endX + (forward ? -6 : 6), y: lineY }, color: forward ? palette.info : palette.positive, strokeWidth: 2.5 });
+      const width = Math.abs(endX - startX) - spacing.lg;
+      operations.push({ type: "create_text", id: `${prefix}-msg-${index}-label`, x: Math.min(startX, endX) + spacing.sm, y: lineY - typeScale.caption.fontSize - spacing.sm, width: Math.max(120, width), text, fontSize: typeScale.caption.fontSize, color: palette.ink, textAlign: "center" });
+      ids.push(`${prefix}-msg-${index}`, `${prefix}-msg-${index}-label`);
+    }
+    steps.push({
+      id: `${prefix}-step-${index}`, title: message.label ?? `Step ${index + 1}`, body: message.detail,
+      focusElementIds: ids, revealElementIds: ids,
+      cameraBounds: { minX: layout.x - LANE_PAD, minY: row.y - spacing.lg, maxX: layout.x + layout.width + LANE_PAD, maxY: row.y + row.height + spacing.lg }
+    });
+  });
+  if (steps.length) operations.push({ type: "set_explanation_sequence", sequence: { id: `${prefix}-sequence`, title, steps } });
+  return operations;
+}
+
+/**
+ * Work in flight: columns of cards. The cards are ordinary notes, so the human drags them between
+ * columns and the next agent turn sees that move as human feedback.
+ */
+function board(input: VisualCompositionInput, prefix: string): CanvasOperation[] {
+  const columns = input.columns ?? [];
+  const x = input.x ?? -520; const y = input.y ?? -320;
+  const title = input.title ?? "Board";
+  if (!columns.length) return titleOperations(prefix, title, x, y, input.width ?? 900);
+  const top = y + titleBlockHeight(title, input.width ?? 900) + spacing.lg;
+  const cardWidth = (column: VisualColumnInput): number => Math.max(headerWidth(column.name, 240), ...column.cards.map((card) => cardMinimumWidth({ id: "c", label: card.label, detail: card.detail })));
+  const widths = columns.map((column) => cardWidth(column) + LANE_PAD * 2);
+  const cardHeights = columns.map((column) => column.cards.map((card) => noteHeight(card.detail ? `${card.label}\n${card.detail}` : card.label, widths[columns.indexOf(column)] - LANE_PAD * 2, undefined, 84)));
+  const columnHeight = Math.max(160, ...cardHeights.map((heights) => heights.reduce((total, height) => total + height + spacing.md, 0)));
+  const layout = laneLayout({ x, y: top, columns: columns.map((column, index) => ({ label: column.name, width: widths[index] })), rowHeights: [columnHeight + LANE_PAD], gap: spacing.md, headerHeight: 64, rowGap: 0 });
+
+  const operations: CanvasOperation[] = titleOperations(prefix, title, x, y, layout.width);
+  columns.forEach((column, index) => {
+    const header = layout.columnHeader(index);
+    const body = layout.cell(index, 0);
+    operations.push({ type: "create_frame", id: `${prefix}-column-${index}`, x: header.minX, y: header.minY, width: header.maxX - header.minX, height: body.maxY - header.minY, title: `${column.name}  ·  ${column.cards.length}`, color: palette.hairline, semanticRole: "section", name: column.name });
+    let cursor = body.minY + spacing.xs;
+    column.cards.forEach((card, cardIndex) => {
+      const height = cardHeights[index][cardIndex];
+      operations.push({ type: "create_note", id: `${prefix}-card-${index}-${cardIndex}`, x: header.minX + LANE_PAD, y: cursor, width: header.maxX - header.minX - LANE_PAD * 2, height, text: card.detail ? `${card.label}\n${card.detail}` : card.label, fillColor: card.accent ?? palette.surface, renderStyle: "sketch" });
+      cursor += height + spacing.md;
+    });
+  });
+  return operations;
+}
+
+/** What lands when: lanes down the side, periods across the top, bars and milestones in between. */
+function roadmap(input: VisualCompositionInput, prefix: string): CanvasOperation[] {
+  const lanes = input.lanes?.length ? input.lanes : [...new Set((input.items ?? []).map((item) => item.lane))];
+  const periods = input.periods?.length ? input.periods : ["1", "2", "3", "4"];
+  const items = input.items ?? [];
+  const x = input.x ?? -520; const y = input.y ?? -320;
+  const title = input.title ?? "Roadmap";
+  if (!lanes.length) return titleOperations(prefix, title, x, y, input.width ?? 900);
+  const top = y + titleBlockHeight(title, input.width ?? 900) + spacing.lg;
+  const laneColumnWidth = Math.max(...lanes.map((lane) => headerWidth(lane, 160)));
+  const periodWidth = Math.max(150, ...periods.map((period) => headerWidth(period, 150)));
+  const laneHeight = (lane: string): number => {
+    const labels = items.filter((item) => item.lane === lane).map((item) => measureTextBlock({ text: item.label, width: periodWidth * 2, fontSize: typeScale.caption.fontSize, fontFamily: AGENT_FONT }).height);
+    return Math.round(Math.max(64, ...labels.map((height) => height + spacing.lg)));
+  };
+  const layout = laneLayout({
+    x, y: top, gap: 0, rowGap: 0, headerHeight: 56,
+    columns: [{ label: "", width: laneColumnWidth }, ...periods.map((period) => ({ label: period, width: periodWidth }))],
+    rowHeights: lanes.map(laneHeight)
+  });
+
+  const operations: CanvasOperation[] = titleOperations(prefix, title, x, y, layout.width);
+  periods.forEach((period, index) => {
+    const header = layout.columnHeader(index + 1);
+    operations.push({ type: "create_text", id: `${prefix}-period-${index}`, x: header.minX + spacing.sm, y: header.minY + spacing.sm, width: header.maxX - header.minX - spacing.md, text: period, fontSize: typeScale.caption.fontSize, fontWeight: 700, color: palette.muted, textAlign: "center" });
+    operations.push({ type: "create_path", id: `${prefix}-grid-${index}`, points: [{ x: header.minX, y: header.maxY }, { x: header.minX, y: layout.y + layout.height }], smooth: false, color: palette.hairline, strokeWidth: 1 });
+  });
+  lanes.forEach((lane, index) => {
+    const row = layout.rows[index];
+    operations.push({ type: "create_text", id: `${prefix}-lane-${index}`, x, y: row.y + spacing.sm, width: laneColumnWidth - spacing.sm, text: lane, fontSize: typeScale.detail.fontSize, fontWeight: 600, color: palette.ink });
+    operations.push({ type: "create_path", id: `${prefix}-lane-rule-${index}`, points: [{ x, y: row.y + row.height }, { x: layout.x + layout.width, y: row.y + row.height }], smooth: false, color: palette.hairline, strokeWidth: 1 });
+  });
+  items.forEach((item, index) => {
+    const laneIndex = Math.max(0, lanes.indexOf(item.lane));
+    const row = layout.rows[laneIndex]; if (!row) return;
+    const start = Math.max(0, Math.min(periods.length - 1, Math.round(item.start)));
+    const span = Math.max(1, Math.min(periods.length - start, Math.round(item.span ?? 1)));
+    const cell = layout.cell(start + 1, laneIndex);
+    const accent = accents[laneIndex % accents.length];
+    if (item.milestone) {
+      const size = Math.min(36, row.height - spacing.md);
+      operations.push({ type: "create_shape", id: `${prefix}-item-${index}`, kind: "diamond", x: cell.minX + spacing.sm, y: row.y + (row.height - size) / 2, width: size, height: size, color: accent, fillColor: accent, fillOpacity: 1 });
+      operations.push({ type: "create_text", id: `${prefix}-item-${index}-label`, x: cell.minX + size + spacing.md, y: row.y + (row.height - typeScale.caption.fontSize * 1.3) / 2, width: periodWidth * span, text: item.label, fontSize: typeScale.caption.fontSize, color: palette.ink });
+      operations.push({ type: "group", groupId: `${prefix}-item-${index}-group`, ids: [`${prefix}-item-${index}`, `${prefix}-item-${index}-label`] });
+    } else {
+      const width = periodWidth * span - spacing.sm * 2;
+      const height = Math.max(34, row.height - spacing.lg);
+      operations.push({ type: "create_shape", id: `${prefix}-item-${index}`, kind: "rectangle", x: cell.minX + spacing.sm, y: row.y + (row.height - height) / 2, width, height, color: accent, strokeWidth: 2, fillColor: accentTints[laneIndex % accentTints.length], fillOpacity: 1, radius: radius.card });
+      operations.push({ type: "create_text", id: `${prefix}-item-${index}-label`, x: cell.minX + spacing.md, y: row.y + (row.height - typeScale.caption.fontSize * 1.3) / 2, width: width - spacing.md, text: item.label, fontSize: typeScale.caption.fontSize, color: palette.ink });
+      operations.push({ type: "group", groupId: `${prefix}-item-${index}-group`, ids: [`${prefix}-item-${index}`, `${prefix}-item-${index}-label`] });
+    }
+  });
+  return operations;
+}
+
 
 function layoutVisual(input: VisualCompositionInput, prefix: string): CanvasOperation[] {
   if (input.kind === "flowchart") return flowchart(input, prefix);
@@ -309,6 +495,9 @@ function layoutVisual(input: VisualCompositionInput, prefix: string): CanvasOper
     const nodes = sourceNodes.map((node, index) => ({ ...node, parentId: node.parentId ?? (index > 0 ? sourceNodes[Math.floor((index - 1) / 2)]?.id : undefined) }));
     return flowchart({ ...input, kind: "flowchart", nodes }, prefix);
   }
+  if (input.kind === "sequence") return sequence(input, prefix);
+  if (input.kind === "board") return board(input, prefix);
+  if (input.kind === "roadmap") return roadmap(input, prefix);
   if (input.kind === "visual_explainer" || input.kind === "guided_explainer") return visualExplainer(input, prefix);
   return plot(input, prefix);
 }

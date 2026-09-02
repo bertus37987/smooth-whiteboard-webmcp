@@ -42,7 +42,7 @@ export const iconNames: IconName[] = ["check", "close", "plus", "minus", "menu",
 export type ConnectorRoute = "straight" | "orthogonal" | "curved";
 export interface SourceReference { id: string; title: string; url?: string }
 export interface BoardLintIssue {
-  code: "text-overflow" | "off-artboard" | "small-target" | "overlap" | "low-contrast" | "unlabelled-control";
+  code: "text-overflow" | "off-artboard" | "small-target" | "overlap" | "low-contrast" | "unlabelled-control" | "wordy-card";
   severity: "info" | "warning";
   elementIds: string[];
   message: string;
@@ -424,6 +424,7 @@ export function lintBoard(document: WhiteboardDocument): BoardLintIssue[] {
   for (const element of elements) {
     const bounds = elementBounds(element); const width = bounds.maxX - bounds.minX; const height = bounds.maxY - bounds.minY;
     if (element.type === "text" && element.height !== undefined && estimateTextHeight(element.text, element.width, element.fontSize, element) > element.height + 2) issues.push({ code: "text-overflow", severity: "warning", elementIds: [element.id], message: "Text does not fit its text box.", suggestedFix: "Increase the box height or reduce the font size." });
+    if (element.type === "text" && ["note-body", "callout-text"].includes(element.semanticRole ?? "") && element.text.length > 240) issues.push({ code: "wordy-card", severity: "info", elementIds: [element.id], message: "This card carries a paragraph.", suggestedFix: "Keep a headline on the card and move the explanation into a guided step, where the board shows it under the controls." });
     if (CONTROL_ROLES.includes(element.semanticRole ?? "") && (width < 44 || height < 44)) issues.push({ code: "small-target", severity: "warning", elementIds: [element.id], message: "Interactive target is smaller than 44 x 44.", suggestedFix: "Enlarge the control or give it a larger invisible hit area." });
     if (CONTROL_ROLES.includes(element.semanticRole ?? "") && element.type !== "text" && !element.name && !childTextOf.get(element.id)) issues.push({ code: "unlabelled-control", severity: "warning", elementIds: [element.id], message: "Control has no visible label and no name.", suggestedFix: "Add a text label inside the control, group it with one, or set a name." });
     if (element.parentId) {
@@ -440,7 +441,10 @@ export function lintBoard(document: WhiteboardDocument): BoardLintIssue[] {
       }
     }
   }
-  issues.push(...overlapIssues(elements, groupOf));
+  // A connector label belongs to its line, which is already exempt: placement does its best to keep
+  // it clear, and on a dense diagram there is no free spot for the agent to move it to anyway.
+  const connectorLabels = new Set(Object.values(document.connections ?? {}).map((connection) => connection.labelId).filter((id): id is string => Boolean(id)));
+  issues.push(...overlapIssues(elements.filter((element) => !connectorLabels.has(element.id)), groupOf));
   return issues.slice(0, 80);
 }
 
@@ -488,7 +492,23 @@ function segmentsIntersect(a: InkPoint, b: InkPoint, c: InkPoint, d: InkPoint): 
  * leave the direct line so diagrams stop drawing through their own nodes. The result is an ordinary
  * point list, so renderer, exporter and hit testing need no special case.
  */
-export function connectionRoute(from: PageElement, to: PageElement, route: ConnectorRoute = "straight"): InkPoint[] {
+/** True when any segment of the path cuts through one of the boxes. */
+export function routeBlocked(points: InkPoint[], obstacles: Bounds[]): boolean {
+  for (let index = 1; index < points.length; index += 1) {
+    const a = points[index - 1]; const b = points[index];
+    for (const box of obstacles) {
+      const corners = [{ x: box.minX, y: box.minY }, { x: box.maxX, y: box.minY }, { x: box.maxX, y: box.maxY }, { x: box.minX, y: box.maxY }];
+      if (a.x > box.minX && a.x < box.maxX && a.y > box.minY && a.y < box.maxY) return true;
+      for (let corner = 0; corner < 4; corner += 1) {
+        const c = corners[corner]; const d = corners[(corner + 1) % 4];
+        if (segmentsIntersect(a, b, { ...c, pressure: .5 }, { ...d, pressure: .5 })) return true;
+      }
+    }
+  }
+  return false;
+}
+
+export function connectionRoute(from: PageElement, to: PageElement, route: ConnectorRoute = "straight", obstacles: Bounds[] = []): InkPoint[] {
   const anchors = connectionPoints(from, to);
   if (route === "straight") return [anchors.from, anchors.to];
   const a = elementBounds(from); const b = elementBounds(to);
@@ -496,18 +516,34 @@ export function connectionRoute(from: PageElement, to: PageElement, route: Conne
   const start = sideAnchor(a, horizontal, horizontal ? (b.minX + b.maxX) / 2 > (a.minX + a.maxX) / 2 : (b.minY + b.maxY) / 2 > (a.minY + a.maxY) / 2);
   const end = sideAnchor(b, horizontal, horizontal ? (a.minX + a.maxX) / 2 > (b.minX + b.maxX) / 2 : (a.minY + a.maxY) / 2 > (b.minY + b.maxY) / 2);
   if (route === "orthogonal") {
-    const middle = horizontal ? (start.x + end.x) / 2 : (start.y + end.y) / 2;
-    return horizontal
+    // Two ways to turn a corner: meet on a shared x, or meet on a shared y.
+    const build = (alongX: boolean, middle: number): InkPoint[] => alongX
       ? [start, { x: middle, y: start.y, pressure: .5 }, { x: middle, y: end.y, pressure: .5 }, end]
       : [start, { x: start.x, y: middle, pressure: .5 }, { x: end.x, y: middle, pressure: .5 }, end];
+    const direct = build(horizontal, horizontal ? (start.x + end.x) / 2 : (start.y + end.y) / 2);
+    if (!obstacles.length || !routeBlocked(direct, obstacles)) return direct;
+    const margin = 28;
+    const nearest = (values: number[], from: number): number[] => [...values].sort((left, right) => Math.abs(left - from) - Math.abs(right - from));
+    // Slide the corner along the natural axis first; if the obstacle sits square in the way, leave
+    // that axis altogether and go around it.
+    const sameAxis = nearest(obstacles.flatMap((box) => horizontal ? [box.minX - margin, box.maxX + margin] : [box.minY - margin, box.maxY + margin]), horizontal ? start.x : start.y).map((middle) => build(horizontal, middle));
+    const crossAxis = nearest(obstacles.flatMap((box) => horizontal ? [box.minY - margin, box.maxY + margin] : [box.minX - margin, box.maxX + margin]), horizontal ? start.y : start.x).map((middle) => build(!horizontal, middle));
+    return [...sameAxis, ...crossAxis].find((candidate) => !routeBlocked(candidate, obstacles)) ?? direct;
   }
   const dx = end.x - start.x; const dy = end.y - start.y; const length = Math.max(1, Math.hypot(dx, dy));
+  const sample = (bow: number): InkPoint[] => {
+    const control = { x: (start.x + end.x) / 2 - dy / length * bow, y: (start.y + end.y) / 2 + dx / length * bow };
+    return Array.from({ length: 15 }, (_, index) => {
+      const t = index / 14; const inverse = 1 - t;
+      return { x: inverse * inverse * start.x + 2 * inverse * t * control.x + t * t * end.x, y: inverse * inverse * start.y + 2 * inverse * t * control.y + t * t * end.y, pressure: .5 };
+    });
+  };
   const bow = Math.min(90, length * .18);
-  const control = { x: (start.x + end.x) / 2 - dy / length * bow, y: (start.y + end.y) / 2 + dx / length * bow };
-  return Array.from({ length: 15 }, (_, index) => {
-    const t = index / 14; const inverse = 1 - t;
-    return { x: inverse * inverse * start.x + 2 * inverse * t * control.x + t * t * end.x, y: inverse * inverse * start.y + 2 * inverse * t * control.y + t * t * end.y, pressure: .5 };
-  });
+  const curved = sample(bow);
+  if (!routeBlocked(curved, obstacles)) return curved;
+  // Try the other side, then a wider arc, before giving up on avoiding the obstacle.
+  for (const candidate of [-bow, bow * 2, -bow * 2]) { const attempt = sample(candidate); if (!routeBlocked(attempt, obstacles)) return attempt; }
+  return curved;
 }
 
 function sideAnchor(box: Bounds, horizontal: boolean, positive: boolean): InkPoint {
