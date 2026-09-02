@@ -6,6 +6,8 @@
   <meta name="theme-color" content="#ffffff">
   <meta name="description" content="A shared infinite whiteboard for people and browser agents.">
   <title>Shared Whiteboard</title>
+  <link rel="preload" href="./fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="./fonts/caveat-latin.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="./app.css?v=0.15.1">
 </head>
 <body>
@@ -18,11 +20,15 @@
         <button type="button" data-tool="marker" aria-label="Marker" title="Marker · M"></button>
         <button type="button" data-tool="eraser" aria-label="Eraser" title="Eraser · E"></button>
         <button type="button" data-tool="select" aria-label="Select" title="Select · V"></button>
+        <button type="button" data-tool="hand" aria-label="Pan canvas" title="Pan canvas · H"></button>
         <button type="button" data-tool="text" aria-label="Text field" title="Text field · T"></button>
+        <button type="button" data-tool="sticky" aria-label="Sticky note" title="Sticky note · N"></button>
+        <button type="button" id="image-tool" data-tool="image" aria-label="Image" title="Image"></button>
+        <button type="button" data-tool="artboard" aria-label="Artboard" title="Artboard"></button>
       </div>
       <div class="toolbar-divider"></div>
       <button type="button" id="shapes-toggle" aria-label="Shapes" title="Shapes"></button>
-      <button type="button" id="content-toggle" aria-label="Content" title="Content"></button>
+      <button type="button" data-tool="ai-lasso" class="ai-tool" aria-label="AI Lasso" title="AI Lasso · K — circle objects to send them to the agent"></button>
       <button type="button" id="color-picker-toggle" class="color-picker-toggle" aria-label="Color" title="Color"><span></span></button>
       <div class="toolbar-divider secondary-divider"></div>
       <button type="button" id="undo" class="secondary-action" aria-label="Undo" title="Undo"></button>
@@ -41,17 +47,6 @@
       <button type="button" data-tool="select" aria-label="Select"></button>
       <button type="button" data-tool="lasso" aria-label="Lasso"></button>
       <button type="button" data-tool="hand" aria-label="Pan canvas"></button>
-    </section>
-    <section id="content-popover" class="popover content-popover" hidden aria-label="Content">
-      <button type="button" data-tool="sticky" aria-label="Sticky note"><span>Note</span></button>
-      <button type="button" id="image-tool" data-tool="image" aria-label="Image"><span>Image</span></button>
-      <button type="button" data-tool="artboard" aria-label="Artboard"><span>Artboard</span></button>
-      <div class="popover-rule"></div>
-      <button type="button" data-ui-template="button"><span>Button</span></button>
-      <button type="button" data-ui-template="input"><span>Text field</span></button>
-      <button type="button" data-ui-template="card"><span>Card</span></button>
-      <button type="button" data-ui-template="switch"><span>Switch</span></button>
-      <button type="button" data-ui-template="tabs"><span>Tabs</span></button>
     </section>
     <section id="color-popover" class="popover color-popover" hidden>
       <div class="swatches" aria-label="Quick colors">

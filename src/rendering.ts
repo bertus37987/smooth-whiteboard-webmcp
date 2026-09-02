@@ -131,10 +131,19 @@ function drawSketchShape(context: CanvasRenderingContext2D, shape: ShapeElement)
   context.restore();
 }
 
-function drawArrowHead(context: CanvasRenderingContext2D, start: { x: number; y: number }, end: { x: number; y: number }, size: number): void {
+/** The two barbs of an arrow head, shared by the canvas renderer and the SVG exporter. */
+export function arrowHeadPoints(start: { x: number; y: number }, end: { x: number; y: number }, size: number): { left: { x: number; y: number }; right: { x: number; y: number } } {
   const angle = Math.atan2(end.y - start.y, end.x - start.x); const length = Math.max(18, size * 5);
-  context.moveTo(end.x, end.y); context.lineTo(end.x - Math.cos(angle - Math.PI / 6) * length, end.y - Math.sin(angle - Math.PI / 6) * length);
-  context.moveTo(end.x, end.y); context.lineTo(end.x - Math.cos(angle + Math.PI / 6) * length, end.y - Math.sin(angle + Math.PI / 6) * length);
+  return {
+    left: { x: end.x - Math.cos(angle - Math.PI / 6) * length, y: end.y - Math.sin(angle - Math.PI / 6) * length },
+    right: { x: end.x - Math.cos(angle + Math.PI / 6) * length, y: end.y - Math.sin(angle + Math.PI / 6) * length }
+  };
+}
+
+function drawArrowHead(context: CanvasRenderingContext2D, start: { x: number; y: number }, end: { x: number; y: number }, size: number): void {
+  const barbs = arrowHeadPoints(start, end, size);
+  context.moveTo(end.x, end.y); context.lineTo(barbs.left.x, barbs.left.y);
+  context.moveTo(end.x, end.y); context.lineTo(barbs.right.x, barbs.right.y);
 }
 
 export function drawShape(context: CanvasRenderingContext2D, shape: ShapeElement): void {
@@ -184,11 +193,14 @@ export function drawHighlight(context: CanvasRenderingContext2D, highlight: High
 }
 
 export const textFontFamilies = {
-  sans: "Inter, ui-sans-serif, system-ui, sans-serif",
+  sans: '"Inter", ui-sans-serif, system-ui, sans-serif',
   serif: "Georgia, Cambria, serif",
   mono: '"SFMono-Regular", Consolas, "Liberation Mono", monospace',
-  handwriting: '"Segoe Print", "Bradley Hand", "Comic Sans MS", "Chalkboard SE", cursive, sans-serif'
+  handwriting: '"Caveat", "Segoe Print", "Bradley Hand", "Comic Sans MS", "Chalkboard SE", cursive, sans-serif'
 } as const;
+
+/** The bundled faces, in the form document.fonts.load() wants. */
+export const bundledFontFaces = ['400 16px "Inter"', '700 16px "Inter"', '400 16px "Caveat"', '700 16px "Caveat"'] as const;
 export const TEXT_LINE_HEIGHT = 1.22;
 
 export type TextMetricsInput = Pick<TextElement, "fontSize" | "fontFamily" | "fontWeight" | "fontStyle" | "blockStyle">;
@@ -204,14 +216,18 @@ export function textFontString(text: TextMetricsInput, family?: string): string 
  */
 export function wrapTextLines(text: string, width: number, blockStyle: TextElement["blockStyle"] | undefined, measure: (line: string) => number): string[] {
   const lines: string[] = [];
-  const prefix = blockStyle === "bullet" ? "• " : blockStyle === "numbered" ? "1. " : blockStyle === "check" ? "☐ " : blockStyle === "quote" ? "› " : "";
-  const paragraphs = text.split("\n").map((paragraph, index) => prefix ? `${blockStyle === "numbered" ? `${index + 1}. ` : prefix}${paragraph}`.replace(/^1\. \d+\. /, `${index + 1}. `) : paragraph);
-  for (const paragraph of paragraphs) {
-    const words = paragraph.split(/\s+/).filter(Boolean); let line = "";
+  const marker = (index: number): string => blockStyle === "bullet" ? "• " : blockStyle === "numbered" ? `${index + 1}. ` : blockStyle === "check" ? "☐ " : blockStyle === "quote" ? "› " : "";
+  for (const [index, paragraph] of text.split("\n").entries()) {
+    const prefix = marker(index);
+    // Wrapped list lines keep the marker's width, so they hang under the text and not under the bullet.
+    const indent = " ".repeat(prefix.length);
+    const words = paragraph.split(/\s+/).filter(Boolean);
+    let line = prefix; let started = false;
     for (const word of words) {
-      const candidate = line ? `${line} ${word}` : word;
-      if (line && measure(candidate) > width) { lines.push(line); line = word; }
+      const candidate = started ? `${line} ${word}` : `${line}${word}`;
+      if (started && measure(candidate) > width) { lines.push(line); line = `${indent}${word}`; }
       else line = candidate;
+      started = true;
     }
     lines.push(line);
   }

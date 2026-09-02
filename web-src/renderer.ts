@@ -9,6 +9,8 @@ export class BoardRenderer {
   readonly camera: Camera = { x: window.innerWidth / 2, y: window.innerHeight / 2, zoom: 1 };
   selectionIds = new Set<string>();
   lasso: InkPoint[] = [];
+  /** "ai" draws the lasso in the agent blue, because it collects context instead of a selection. */
+  lassoMode: "select" | "ai" = "select";
   instructionInk: InkPoint[][] = [];
   agentMarkers: AgentMarkerAnnotation[] = [];
   activeAgentIds = new Set<string>();
@@ -106,6 +108,7 @@ export class BoardRenderer {
         const image = cachedImage(element, () => this.request()); if (image.complete && image.naturalWidth > 0) context.drawImage(image, element.x, element.y, element.width, element.height);
       } else { context.save(); context.globalAlpha *= element.opacity ?? 1; drawBoardElement(context, element); context.restore(); }
       context.restore();
+      if (element.agentAttached) this.drawAttachmentGlow(context, element);
       if (element.agentAttached && element.semanticRole === "note") this.drawAttachmentBadge(context, element);
     }
     this.drawPendingAgentChanges(context);
@@ -147,6 +150,14 @@ export class BoardRenderer {
     context.restore();
   }
 
+  private drawAttachmentGlow(context: CanvasRenderingContext2D, element: PageElement): void {
+    const box = elementBounds(element); const pad = 7 / this.camera.zoom; const radius = 12 / this.camera.zoom;
+    context.save(); context.strokeStyle = "rgba(115,173,255,.95)"; context.lineWidth = 2.2 / this.camera.zoom;
+    context.shadowColor = "rgba(133,190,255,.8)"; context.shadowBlur = 20 / this.camera.zoom;
+    context.beginPath(); context.roundRect(box.minX - pad, box.minY - pad, box.maxX - box.minX + pad * 2, box.maxY - box.minY + pad * 2, radius); context.stroke();
+    context.restore();
+  }
+
   private drawAttachmentBadge(context: CanvasRenderingContext2D, element: PageElement): void {
     const box = elementBounds(element); const radius = 12 / this.camera.zoom; const x = box.maxX - radius * .4; const y = box.minY + radius * .4;
     context.save(); context.fillStyle = "#080808"; context.strokeStyle = "#ffffff"; context.lineWidth = 2 / this.camera.zoom; context.beginPath(); context.arc(x, y, radius, 0, Math.PI * 2); context.fill(); context.stroke();
@@ -174,7 +185,8 @@ export class BoardRenderer {
   }
 
   private drawLasso(context: CanvasRenderingContext2D): void {
-    if (this.lasso.length < 2) return; context.save(); context.strokeStyle = "#404040"; context.lineWidth = 1.5 / this.camera.zoom;
+    if (this.lasso.length < 2) return; context.save(); context.strokeStyle = this.lassoMode === "ai" ? "#73adff" : "#404040"; context.lineWidth = (this.lassoMode === "ai" ? 2.4 : 1.5) / this.camera.zoom;
+    if (this.lassoMode === "ai") { context.shadowColor = "rgba(133,190,255,.85)"; context.shadowBlur = 18 / this.camera.zoom; }
     context.setLineDash([6 / this.camera.zoom, 5 / this.camera.zoom]); context.beginPath(); context.moveTo(this.lasso[0].x, this.lasso[0].y);
     for (const point of this.lasso.slice(1)) context.lineTo(point.x, point.y); context.stroke(); context.restore();
   }

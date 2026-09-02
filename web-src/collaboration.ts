@@ -1,6 +1,6 @@
 import { PageElement } from "../src/document";
 import { InkPoint } from "../src/strokes";
-import { VisualCompositionInput, composeVisual, isVisualComposition } from "./compositions";
+import { VisualCompositionInput, composeVisualDetailed, isVisualComposition } from "./compositions";
 import {
   Bounds, CanvasOperation, CollaborationTurn, ContextScope, DeletedRegion, PriorityRegion, SessionState, TurnCapabilities,
   boardBounds, boundsForPoints, boundsIntersect, elementSummary, isCanvasOperation, lintBoard, operationTargetIds,
@@ -409,9 +409,11 @@ export class CollaborationSession {
   async compose(input: VisualCompositionInput, baseRevision?: number, leaseToken?: string, signal?: AbortSignal): Promise<AgentResponse> {
     const denied = this.requireWritable(leaseToken); if (denied) return denied;
     if (!isVisualComposition(input)) return this.respond({ ok: false, error: "invalid_visual", instruction: "Use one supported visual kind and provide valid nodes, sections, steps, axes or series." });
-    const operations = composeVisual(input);
+    const { operations, repairs } = composeVisualDetailed(input);
     if (!operations.length) return this.respond({ ok: false, error: "empty_visual", instruction: "The visual produced no canvas content. Provide nodes, sections, steps or series." });
-    return this.apply(operations, baseRevision, leaseToken, signal, 240);
+    const applied = await this.apply(operations, baseRevision, leaseToken, signal, 240);
+    // Tell the agent what the layout repair had to change, so its next hand-placed edit is better.
+    return repairs.length ? { ...applied, repairs } : applied;
   }
 
   complete(summary: string, leaseToken?: string): AgentResponse {

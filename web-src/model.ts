@@ -111,7 +111,7 @@ export interface WhiteboardDocument {
   presentation?: { sequenceId: string; index: number } | null;
 }
 
-export type BoardTool = "select" | "hand" | "pen" | "ai-pen" | "marker" | "rectangle" | "ellipse" | "arrow" | "text" | "sticky" | "image" | "lasso" | "eraser" | "artboard";
+export type BoardTool = "select" | "hand" | "pen" | "ai-pen" | "marker" | "rectangle" | "ellipse" | "arrow" | "text" | "sticky" | "image" | "lasso" | "ai-lasso" | "eraser" | "artboard";
 
 export type CanvasOperation =
   | { type: "create_text"; id?: string; x: number; y: number; text: string; fontSize?: number; width?: number; color?: string; fontFamily?: "sans" | "serif" | "mono" | "handwriting"; fontWeight?: 400 | 500 | 600 | 700; fontStyle?: "normal" | "italic"; textDecoration?: "none" | "underline" | "line-through"; textAlign?: "left" | "center" | "right"; blockStyle?: TextElement["blockStyle"]; highlightColor?: string; renderStyle?: "clean" | "sketch"; semanticRole?: string; parentId?: string; name?: string; sourceRefs?: string[] }

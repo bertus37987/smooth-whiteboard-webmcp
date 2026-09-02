@@ -10,7 +10,8 @@ This project turns the existing Smooth Handwriting vector canvas into a standalo
 
 - Infinite, coordinate-based canvas with cursor-centred zoom and free pan
 - Low-latency freehand input using coalesced pointer events; no handwriting model runs while the pen is down
-- Pen-first human tools for freehand ink, transient AI ink, smart marker, shapes, arrows, rich text, notes, images, artboards, lasso and pixel erasing; tables are deliberately agent-only
+- Pen-first human tools for freehand ink, transient AI ink, smart marker, shapes, arrows, rich text, notes, images, artboards, hand panning, lasso and pixel erasing; tables are deliberately agent-only
+- An AI Lasso beside the tools: circle any objects and they glow blue and travel with the next request, without touching the current selection
 - Selection, edge-aware multi-element lasso, moving, eight-handle group resizing, duplication, layer ordering and deletion
 - Plain resizable canvas text fields with headings, bullets, numbering, checklists, quotes, code and math styles; sticky notes remain a separate tool
 - Sticky notes can be marked with the paperclip action and become an explicit priority region in the next agent turn
