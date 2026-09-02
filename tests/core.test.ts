@@ -407,7 +407,7 @@ assert.equal(exportedArtboards[0].elements.some((element) => element.id === "des
 void (async () => {
   const registered: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }> = [];
   Object.defineProperty(globalThis, "document", { configurable: true, value: { modelContext: { registerTool: (tool: { name: string; description?: string; inputSchema?: Record<string, unknown> }) => { registered.push(tool); } } } });
-  const available = await registerWhiteboardTools({ session: () => ({}), waitForTurn: async () => ({}), inspect: () => ({}), focus: () => ({}), publishPlan: () => ({}), apply: async () => ({}), compose: async () => ({}), complete: () => ({}) }, new AbortController().signal);
+  const available = await registerWhiteboardTools({ session: () => ({}), waitForTurn: async () => ({}), inspect: () => ({}), focus: () => ({}), publishPlan: () => ({}), apply: async () => ({}), compose: async () => ({}), complete: () => ({}), snapshot: async () => null }, new AbortController().signal);
   assert.equal(available, true); assert.deepEqual(registered.map((tool) => tool.name), ["start_whiteboard_session", "wait_for_human_turn", "inspect_whiteboard", "focus_whiteboard_region", "publish_agent_plan", "apply_whiteboard_changes", "create_structured_visual", "complete_whiteboard_contribution"]);
   const visualTool = registered.find((tool) => tool.name === "create_structured_visual");
   assert.ok(JSON.stringify(visualTool?.inputSchema).includes("ui_mockup") && JSON.stringify(visualTool?.inputSchema).includes("guided_explainer"), "WebMCP advertises high-level UI, learning and diagram capabilities");

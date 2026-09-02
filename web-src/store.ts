@@ -1,7 +1,8 @@
 import { PageElement, elementBounds } from "../src/document";
 import { beautifyStroke } from "../src/strokes";
 import { measureTextBlock } from "./measure";
-import { Bounds, CanvasOperation, ConnectorLanes, ConnectorRoute, WhiteboardDocument, boardBounds, cloneBoard, connectionRoute, elementSignature, emptyBoard, estimateTextHeight, iconSegments, migrateBoard, operationElement, polygonShapePoints, scaleElement, translateElement } from "./model";
+import { fitSubpaths, parseSvgPath } from "./path";
+import { Bounds, CanvasOperation, ConnectorLanes, ConnectorRoute, WhiteboardDocument, annotationGeometry, boardBounds, cloneBoard, connectionRoute, elementSignature, emptyBoard, estimateTextHeight, iconSegments, migrateBoard, operationElement, polygonShapePoints, scaleElement, translateElement } from "./model";
 
 const STORAGE_KEY = "smooth-whiteboard-v3";
 const LEGACY_STORAGE_KEY = "smooth-whiteboard-v1";
@@ -65,6 +66,9 @@ export class BoardStore extends EventTarget {
     const removedRegions: Array<{ id: string; bounds: Bounds }> = [];
     for (const [id, value] of this.mutationBaseline) if (!next.has(id)) removedRegions.push({ id, bounds: value.bounds });
     this.mutationBaseline = next;
+    // Which elements the agent removed, so a rollback can bring exactly those back and leave
+    // anything the human deleted in the meantime deleted.
+    if (source === "agent") for (const region of removedRegions) this.agentRemovedIds.add(region.id);
     if (source === "reset" || (!changedIds.length && !removedRegions.length)) return;
     this.onContentMutation?.({ source, changedIds, removedIds: removedRegions.map((region) => region.id), removedRegions });
   }
@@ -86,21 +90,48 @@ export class BoardStore extends EventTarget {
   }
 
   beginAgentContribution(): void {
-    if (!this.agentBefore) { this.agentBefore = cloneBoard(this.document); localStorage.setItem(PRE_AGENT_STORAGE_KEY, JSON.stringify(this.agentBefore)); }
+    if (!this.agentBefore) { this.agentBefore = cloneBoard(this.document); this.agentRemovedIds.clear(); localStorage.setItem(PRE_AGENT_STORAGE_KEY, JSON.stringify(this.agentBefore)); }
     if (this.document.turn) this.document.turn.status = "working";
   }
 
   acceptAgentContribution(): void {
-    this.agentBefore = null; localStorage.removeItem(PRE_AGENT_STORAGE_KEY); if (this.document.turn) { this.document.turn.status = "complete"; this.document.turn.promptText = ""; this.document.turn.instructionInk = []; this.document.turn.agentMarkers = []; this.document.turn.pendingChangeIds = []; this.document.turn.leaseToken = undefined; } this.document.lastAgentRevision = this.document.revision; this.changed("metadata");
+    this.agentBefore = null; this.agentRemovedIds.clear(); localStorage.removeItem(PRE_AGENT_STORAGE_KEY); if (this.document.turn) { this.document.turn.status = "complete"; this.document.turn.promptText = ""; this.document.turn.instructionInk = []; this.document.turn.agentMarkers = []; this.document.turn.pendingChangeIds = []; this.document.turn.leaseToken = undefined; } this.document.lastAgentRevision = this.document.revision; this.changed("metadata");
   }
 
+  /**
+   * Takes back the agent's proposal element by element instead of restoring the whole document.
+   * The human may have drawn beside it while it was being made, and that work has to survive.
+   */
   undoAgentContribution(): boolean {
-    if (!this.agentBefore) return false; const cancelledTurn = this.document.turn; this.document = this.agentBefore; this.agentBefore = null; localStorage.removeItem(PRE_AGENT_STORAGE_KEY); if (cancelledTurn) this.document.turn = { ...cancelledTurn, status: "cancelled", instructionInk: [], agentMarkers: [], pendingChangeIds: [], leaseToken: undefined };
+    const before = this.agentBefore; if (!before) return false;
+    const cancelledTurn = this.document.turn;
+    const previous = new Map(before.elements.map((element) => [element.id, element]));
+    const proposed = new Set(this.document.agentElementIds.filter((id) => !previous.has(id)));
+    const touched = new Set(cancelledTurn?.pendingChangeIds ?? []);
+    // Drop what the agent created, put back the pre-turn version of what it edited.
+    this.document.elements = this.document.elements
+      .filter((element) => !proposed.has(element.id))
+      .map((element) => touched.has(element.id) && previous.has(element.id) ? structuredClone(previous.get(element.id)!) : element);
+    // Restore what it deleted, in its original place in the stacking order.
+    const present = new Set(this.document.elements.map((element) => element.id));
+    for (const [index, element] of before.elements.entries()) {
+      if (present.has(element.id) || !this.agentRemovedIds.has(element.id)) continue;
+      this.document.elements.splice(Math.min(index, this.document.elements.length), 0, structuredClone(element));
+    }
+    this.document.agentElementIds = this.document.agentElementIds.filter((id) => !proposed.has(id));
+    this.document.artboardIds = this.document.artboardIds.filter((id) => !proposed.has(id));
+    this.document.groups = Object.fromEntries(Object.entries(this.document.groups ?? {}).map(([id, members]) => [id, members.filter((member) => !proposed.has(member))]).filter(([, members]) => members.length > 1));
+    this.document.explanationSequences = before.explanationSequences ? structuredClone(before.explanationSequences) : this.document.explanationSequences;
+    this.document.presentation = before.presentation ? structuredClone(before.presentation) : null;
+    this.agentBefore = null; this.agentRemovedIds.clear(); localStorage.removeItem(PRE_AGENT_STORAGE_KEY);
+    if (cancelledTurn) this.document.turn = { ...cancelledTurn, status: "cancelled", instructionInk: [], agentMarkers: [], pendingChangeIds: [], leaseToken: undefined };
     // The rollback removes agent content, not human work: refresh the baseline without reporting it as human feedback.
     this.changed("content", "agent"); return true;
   }
 
   hasAgentContribution(): boolean { return this.agentBefore !== null; }
+
+  private agentRemovedIds = new Set<string>();
 
   groupIdFor(elementId: string): string | undefined { return Object.entries(this.document.groups ?? {}).find(([, members]) => members.includes(elementId))?.[0]; }
 
@@ -163,7 +194,9 @@ export class BoardStore extends EventTarget {
     } else if (operation.type === "create_icon") {
       const prefix = operation.id ?? `icon-${crypto.randomUUID()}`; const members: string[] = [];
       for (const [index, points] of iconSegments(operation.name, operation.x, operation.y, Math.max(12, operation.size ?? 32)).entries()) {
-        const element = operationElement({ type: "create_stroke", id: `${prefix}-${index}`, points, size: Math.max(1.5, (operation.size ?? 32) / 12), color: operation.color ?? "#080808" }); element.semanticRole = "icon"; element.parentId = operation.parentId; element.name = operation.name;
+        // Polygons, not strokes: a symbol has to keep its corners instead of being smoothed into a blob.
+        const first = points[0]; const last = points[points.length - 1];
+        const element = operationElement({ type: "create_polygon", id: `${prefix}-${index}`, points, closed: Math.hypot(last.x - first.x, last.y - first.y) < Math.max(1, (operation.size ?? 32) / 24), strokeWidth: Math.max(1.5, (operation.size ?? 32) / 14), color: operation.color ?? "#080808" }); element.semanticRole = "icon"; element.parentId = operation.parentId; element.name = operation.name;
         this.document.elements.push(element); members.push(element.id); created.push(element.id); if (source === "agent") this.document.agentElementIds.push(element.id);
       }
       if (members.length > 1) (this.document.groups ??= {})[prefix] = members;
@@ -275,9 +308,46 @@ export class BoardStore extends EventTarget {
       for (const element of this.elementsFor(this.expandGroupIds(operation.ids))) if (element.id !== operation.parentId) element.parentId = operation.parentId;
     } else if (operation.type === "update_artboard") {
       const element = this.document.elements.find((candidate) => candidate.id === operation.id); if (element?.type === "shape" && (element.artboard || element.semanticRole === "artboard")) { element.semanticRole = "artboard"; element.name = operation.name ?? element.name; element.artboard = { preset: operation.preset ?? element.artboard?.preset ?? "custom", backgroundColor: operation.backgroundColor ?? element.artboard?.backgroundColor ?? "#ffffff", clipContent: operation.clipContent ?? element.artboard?.clipContent ?? false }; element.fillColor = element.artboard.backgroundColor; element.fillOpacity = 1; if (!this.document.artboardIds.includes(element.id)) this.document.artboardIds.push(element.id); }
+    } else if (operation.type === "create_path" && operation.d) {
+      // SVG path data: models write it well, and it lands here as ordinary editable geometry.
+      const prefix = operation.id ?? `path-${crypto.randomUUID()}`; const members: string[] = [];
+      const subpaths = fitSubpaths(parseSvgPath(operation.d), { x: operation.x ?? 0, y: operation.y ?? 0, width: operation.width, height: operation.height });
+      for (const [index, subpath] of subpaths.entries()) {
+        const first = subpath[0]; const last = subpath[subpath.length - 1];
+        const element = operationElement({
+          type: "create_polygon", id: `${prefix}-${index}`, points: subpath.map((point) => ({ x: point.x, y: point.y, pressure: .5 })),
+          closed: operation.closed ?? (Math.hypot(last.x - first.x, last.y - first.y) < 1), color: operation.color, strokeWidth: operation.strokeWidth, fillColor: operation.fillColor, fillOpacity: operation.fillOpacity
+        });
+        element.renderStyle = operation.renderStyle;
+        this.document.elements.push(element); members.push(element.id); created.push(element.id);
+        if (source === "agent") this.document.agentElementIds.push(element.id);
+      }
+      if (members.length > 1) (this.document.groups ??= {})[prefix] = members;
+    } else if (operation.type === "create_annotation") {
+      const prefix = operation.id ?? `annotation-${crypto.randomUUID()}`;
+      const geometry = annotationGeometry(operation);
+      const style = source === "agent" ? this.agentTextStyle(undefined, undefined, operation.renderStyle) : { fontFamily: "sans" as const, renderStyle: operation.renderStyle ?? "clean" as const };
+      const bubble = operation.kind === "bubble";
+      const shape = operationElement({
+        type: "create_polygon", id: bubble ? `${prefix}-box` : prefix, points: geometry.points.map((point) => ({ x: point.x, y: point.y, pressure: .5 })), closed: geometry.closed,
+        color: operation.color ?? "#080808", strokeWidth: operation.strokeWidth ?? 2, fillColor: bubble ? "#ffffff" : undefined, fillOpacity: bubble ? 1 : 0
+      });
+      shape.renderStyle = style.renderStyle; shape.semanticRole = `annotation-${operation.kind}`;
+      this.document.elements.push(shape); created.push(shape.id);
+      if (source === "agent") this.document.agentElementIds.push(shape.id);
+      if (geometry.label) {
+        const label = operationElement({
+          type: "create_text", id: `${prefix}-text`, x: geometry.label.x, y: geometry.label.y, width: geometry.label.width, text: operation.text!.trim(),
+          fontSize: Math.max(12, Math.min(48, operation.fontSize ?? 18)), color: operation.color ?? "#080808", fontFamily: style.fontFamily, renderStyle: style.renderStyle,
+          textAlign: geometry.label.align, semanticRole: `annotation-${operation.kind}-text`
+        });
+        this.document.elements.push(label); created.push(label.id);
+        if (source === "agent") this.document.agentElementIds.push(label.id);
+        (this.document.groups ??= {})[prefix] = [...created];
+      }
     } else if (operation.type === "create_path") {
       // Models emit coarse points: bow turns two points into an arc, smoothing makes the rest look drawn.
-      let points = operation.points.map((point) => ({ x: point.x, y: point.y, pressure: .5 }));
+      let points = (operation.points ?? []).map((point) => ({ x: point.x, y: point.y, pressure: .5 }));
       if (points.length === 2 && operation.bow) {
         const [start, end] = points; const dx = end.x - start.x; const dy = end.y - start.y; const length = Math.max(1, Math.hypot(dx, dy));
         const control = { x: (start.x + end.x) / 2 - dy / length * operation.bow, y: (start.y + end.y) / 2 + dx / length * operation.bow };

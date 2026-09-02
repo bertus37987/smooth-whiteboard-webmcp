@@ -2,6 +2,7 @@ import { PageElement, ShapeElement, TextElement, boundsForElements, elementBound
 import { InkPoint } from "../src/strokes";
 import { TextMetricsInput } from "../src/rendering";
 import { measuredTextHeight } from "./measure";
+import { parseSvgPath } from "./path";
 
 export interface Camera { x: number; y: number; zoom: number }
 export interface Bounds { minX: number; minY: number; maxX: number; maxY: number }
@@ -11,6 +12,8 @@ export interface WhiteboardSettings {
   autoShape: boolean;
   smartHighlight: boolean;
   englishHandwritingAssist: boolean;
+  /** Take the agent's proposals straight onto the board; Ctrl+Z still takes one back whole. */
+  autoAcceptAgent: boolean;
 }
 export interface PriorityRegion {
   source: "ai-pen" | "attachment" | "selection" | "highlight" | "recent-edit" | "deleted";
@@ -36,8 +39,10 @@ export interface ExplanationStep {
   cameraBounds?: { minX: number; minY: number; maxX: number; maxY: number };
 }
 export interface ExplanationSequence { id: string; title: string; steps: ExplanationStep[] }
-export type IconName = "check" | "close" | "plus" | "minus" | "menu" | "search" | "user" | "heart" | "arrow" | "star" | "bulb" | "question" | "warning" | "clock";
-export const iconNames: IconName[] = ["check", "close", "plus", "minus", "menu", "search", "user", "heart", "arrow", "star", "bulb", "question", "warning", "clock"];
+export type IconName = "check" | "close" | "plus" | "minus" | "menu" | "search" | "user" | "heart" | "arrow" | "star" | "bulb" | "question" | "warning" | "clock"
+  | "server" | "database" | "cloud" | "browser" | "mobile" | "lock" | "key" | "file" | "folder" | "gear" | "mail" | "link" | "chart" | "shield" | "globe" | "terminal";
+export const iconNames: IconName[] = ["check", "close", "plus", "minus", "menu", "search", "user", "heart", "arrow", "star", "bulb", "question", "warning", "clock",
+  "server", "database", "cloud", "browser", "mobile", "lock", "key", "file", "folder", "gear", "mail", "link", "chart", "shield", "globe", "terminal"];
 /** How a smart connector travels between two objects. */
 export type ConnectorRoute = "straight" | "orthogonal" | "curved";
 export interface SourceReference { id: string; title: string; url?: string }
@@ -124,7 +129,8 @@ export type CanvasOperation =
   | { type: "create_arrow"; id?: string; from: { x: number; y: number }; to: { x: number; y: number }; color?: string; strokeWidth?: number; arrowHeads?: "end" | "start" | "both"; lineStyle?: "solid" | "dashed" | "dotted"; renderStyle?: "clean" | "sketch" }
   | { type: "create_stroke"; id?: string; points: InkPoint[]; size?: number; color?: string }
   | { type: "create_polygon"; id?: string; points: InkPoint[]; closed?: boolean; color?: string; strokeWidth?: number; fillColor?: string; fillOpacity?: number; renderStyle?: "clean" | "sketch" }
-  | { type: "create_path"; id?: string; points: Array<{ x: number; y: number }>; smooth?: boolean; closed?: boolean; bow?: number; color?: string; strokeWidth?: number; fillColor?: string; fillOpacity?: number; renderStyle?: "clean" | "sketch" }
+  | { type: "create_path"; id?: string; points?: Array<{ x: number; y: number }>; d?: string; x?: number; y?: number; width?: number; height?: number; smooth?: boolean; closed?: boolean; bow?: number; color?: string; strokeWidth?: number; fillColor?: string; fillOpacity?: number; renderStyle?: "clean" | "sketch" }
+  | { type: "create_annotation"; id?: string; kind: AnnotationKind; x: number; y: number; width: number; height: number; direction?: "left" | "right" | "up" | "down"; text?: string; anchorId?: string; color?: string; strokeWidth?: number; fontSize?: number; renderStyle?: "clean" | "sketch" }
   | { type: "create_callout"; id?: string; x: number; y: number; width?: number; text: string; anchorId?: string; color?: string; fillColor?: string; fontSize?: number; renderStyle?: "clean" | "sketch" }
   | { type: "create_icon"; id?: string; name: IconName; x: number; y: number; size?: number; color?: string; parentId?: string }
   | { type: "create_agent_marker"; id?: string; points?: InkPoint[]; x?: number; y?: number; text?: string; anchorId?: string }
@@ -170,7 +176,8 @@ export function isCanvasOperation(value: unknown): value is CanvasOperation {
     case "create_stroke": return Array.isArray(operation.points) && operation.points.length > 1 && operation.points.every(position);
     case "create_polygon": return Array.isArray(operation.points) && operation.points.length > 1 && operation.points.every(position);
     case "create_icon": return typeof operation.name === "string" && (iconNames as string[]).includes(operation.name) && finite(operation.x) && finite(operation.y) && optionalFinite(operation.size);
-    case "create_path": return Array.isArray(operation.points) && operation.points.length > 1 && operation.points.every(position) && optionalFinite(operation.bow) && optionalFinite(operation.strokeWidth);
+    case "create_path": return (typeof operation.d === "string" && operation.d.trim().length > 0 ? finite(operation.x) && finite(operation.y) && optionalFinite(operation.width) && optionalFinite(operation.height) : Array.isArray(operation.points) && operation.points.length > 1 && operation.points.every(position)) && optionalFinite(operation.bow) && optionalFinite(operation.strokeWidth);
+    case "create_annotation": return (annotationKinds as string[]).includes(String(operation.kind)) && finite(operation.x) && finite(operation.y) && finite(operation.width) && finite(operation.height) && optionalOneOf(operation.direction, ["left", "right", "up", "down"]) && optionalFinite(operation.strokeWidth) && optionalFinite(operation.fontSize) && (operation.text === undefined || typeof operation.text === "string");
     case "create_callout": return finite(operation.x) && finite(operation.y) && typeof operation.text === "string" && operation.text.trim().length > 0 && optionalFinite(operation.width) && optionalFinite(operation.fontSize) && (operation.anchorId === undefined || typeof operation.anchorId === "string");
     case "auto_layout": return ids(operation.ids) && operation.ids.length > 1 && ["row", "column", "grid"].includes(String(operation.direction)) && optionalFinite(operation.gap) && optionalOneOf(operation.align, ["start", "center", "end"]) && optionalFinite(operation.columns);
     case "fit_to_content": return typeof operation.id === "string" && optionalOneOf(operation.mode, ["container", "text"]) && optionalFinite(operation.padding);
@@ -201,7 +208,7 @@ export function isCanvasOperation(value: unknown): value is CanvasOperation {
   }
 }
 
-export const defaultSettings = (): WhiteboardSettings => ({ inputSmoothing: true, pressure: true, autoShape: false, smartHighlight: true, englishHandwritingAssist: true });
+export const defaultSettings = (): WhiteboardSettings => ({ inputSmoothing: true, pressure: true, autoShape: false, smartHighlight: true, englishHandwritingAssist: true, autoAcceptAgent: false });
 export const emptyBoard = (): WhiteboardDocument => ({ version: 3, revision: 0, elements: [], agentElementIds: [], request: null, turn: null, settings: defaultSettings(), lastAgentRevision: 0, connections: {}, groups: {}, artboardIds: [], explanationSequences: [], sources: [], presentation: null });
 
 export function cloneBoard(document: WhiteboardDocument): WhiteboardDocument { return structuredClone(document); }
@@ -235,7 +242,7 @@ export function migrateBoard(value: unknown): WhiteboardDocument | null {
   } : request && request.state !== "answered" ? { id: request.id, status: request.state === "working" ? "working" : "queued", submittedRevision: legacy.revision, createdAt: request.createdAt, promptText: request.instruction ?? "", selectionIds: request.selectionIds, instructionInk: request.ink ?? [], agentMarkers: [], priorityRegions: [], changedElementIds: [], pendingChangeIds: [] } : null;
   const elements = structuredClone(legacy.elements);
   const artboardIds = elements.filter((element) => element.artboard || element.semanticRole === "artboard").map((element) => element.id);
-  return { version: 3, revision: legacy.revision, elements, agentElementIds: [...legacy.agentElementIds], request: null, turn, settings: (legacy as { settings?: WhiteboardSettings }).settings ?? defaultSettings(), lastAgentRevision: (legacy as { lastAgentRevision?: number }).lastAgentRevision ?? 0, connections: structuredClone(legacy.connections ?? {}), groups: structuredClone(legacy.groups ?? {}), artboardIds, explanationSequences: [], sources: [] };
+  return { version: 3, revision: legacy.revision, elements, agentElementIds: [...legacy.agentElementIds], request: null, turn, settings: { ...defaultSettings(), ...(legacy as { settings?: Partial<WhiteboardSettings> }).settings }, lastAgentRevision: (legacy as { lastAgentRevision?: number }).lastAgentRevision ?? 0, connections: structuredClone(legacy.connections ?? {}), groups: structuredClone(legacy.groups ?? {}), artboardIds, explanationSequences: [], sources: [] };
 }
 
 export function boardBounds(elements: PageElement[]): { minX: number; minY: number; maxX: number; maxY: number } | null {
@@ -646,8 +653,33 @@ export function elementSignature(element: PageElement): string {
  * Operation preflight: no batch may partially mutate.   *
  * ---------------------------------------------------- */
 
+/**
+ * The drawn symbols, in a 0..1 box. Written as path data because that is how these shapes are
+ * actually described — one line here beats thirty hand-placed points, and adding one is cheap.
+ */
+const iconPaths: Partial<Record<IconName, string>> = {
+  server: "M .08 .16 H .92 V .42 H .08 Z M .08 .58 H .92 V .84 H .08 Z M .18 .29 h .1 M .18 .71 h .1 M .74 .29 h .08 M .74 .71 h .08",
+  database: "M .5 .1 C .78 .1 .88 .16 .88 .22 C .88 .28 .78 .34 .5 .34 C .22 .34 .12 .28 .12 .22 C .12 .16 .22 .1 .5 .1 Z M .12 .22 V .5 C .12 .56 .22 .62 .5 .62 C .78 .62 .88 .56 .88 .5 V .22 M .12 .5 V .78 C .12 .84 .22 .9 .5 .9 C .78 .9 .88 .84 .88 .78 V .5",
+  cloud: "M .28 .74 C .12 .74 .06 .62 .14 .52 C .18 .46 .26 .44 .32 .46 C .34 .28 .52 .2 .64 .28 C .72 .32 .76 .42 .74 .5 C .9 .48 .96 .64 .86 .72 C .82 .74 .78 .74 .74 .74 Z",
+  browser: "M .08 .2 H .92 V .82 H .08 Z M .08 .36 H .92 M .17 .28 h .04 M .27 .28 h .04 M .37 .28 h .04",
+  mobile: "M .28 .1 H .72 V .9 H .28 Z M .42 .18 h .16 M .46 .8 h .08",
+  lock: "M .2 .44 H .8 V .9 H .2 Z M .32 .44 V .3 C .32 .16 .68 .16 .68 .3 V .44 M .5 .58 V .74",
+  key: "M .34 .5 m -.22 0 a .22 .22 0 1 0 .44 0 a .22 .22 0 1 0 -.44 0 M .56 .5 H .92 M .78 .5 V .68 M .9 .5 V .64",
+  file: "M .24 .08 H .62 L .78 .26 V .92 H .24 Z M .62 .08 V .26 H .78 M .36 .48 h .3 M .36 .64 h .3",
+  folder: "M .08 .24 H .42 L .5 .36 H .92 V .82 H .08 Z",
+  gear: "M .5 .5 m -.26 0 a .26 .26 0 1 0 .52 0 a .26 .26 0 1 0 -.52 0 M .5 .5 m -.09 0 a .09 .09 0 1 0 .18 0 a .09 .09 0 1 0 -.18 0 M .5 .1 V .23 M .5 .77 V .9 M .1 .5 H .23 M .77 .5 H .9 M .22 .22 L .31 .31 M .69 .69 L .78 .78 M .78 .22 L .69 .31 M .31 .69 L .22 .78",
+  mail: "M .08 .24 H .92 V .78 H .08 Z M .08 .24 L .5 .56 L .92 .24",
+  link: "M .42 .6 L .58 .42 M .38 .38 L .26 .5 A .17 .17 0 0 0 .5 .74 L .58 .66 M .62 .62 L .74 .5 A .17 .17 0 0 0 .5 .26 L .42 .34",
+  chart: "M .1 .9 V .1 M .1 .9 H .92 M .24 .9 V .56 H .38 V .9 M .46 .9 V .34 H .6 V .9 M .68 .9 V .48 H .82 V .9",
+  shield: "M .5 .08 L .86 .22 V .5 C .86 .72 .7 .86 .5 .94 C .3 .86 .14 .72 .14 .5 V .22 Z",
+  globe: "M .5 .5 m -.42 0 a .42 .42 0 1 0 .84 0 a .42 .42 0 1 0 -.84 0 M .08 .5 H .92 M .5 .08 C .68 .28 .68 .72 .5 .92 C .32 .72 .32 .28 .5 .08",
+  terminal: "M .08 .18 H .92 V .82 H .08 Z M .22 .36 L .38 .5 L .22 .64 M .5 .66 h .24"
+};
+
 export function iconSegments(name: Extract<CanvasOperation, { type: "create_icon" }>["name"], x: number, y: number, size: number): Array<Array<{ x: number; y: number; pressure: number }>> {
   const point = (px: number, py: number) => ({ x: x + px * size, y: y + py * size, pressure: .5 });
+  const drawn = iconPaths[name];
+  if (drawn) return parseSvgPath(drawn, 8).map((subpath) => subpath.map((position) => point(position.x, position.y)));
   if (name === "check") return [[point(.08, .52), point(.38, .82), point(.92, .16)]];
   if (name === "close") return [[point(.14, .14), point(.86, .86)], [point(.86, .14), point(.14, .86)]];
   if (name === "plus") return [[point(.5, .08), point(.5, .92)], [point(.08, .5), point(.92, .5)]];
@@ -662,6 +694,92 @@ export function iconSegments(name: Extract<CanvasOperation, { type: "create_icon
   if (name === "warning") return [[point(.5, .1), point(.94, .86), point(.06, .86), point(.5, .1)], [point(.5, .38), point(.5, .62)], [point(.5, .74), point(.5, .78)]];
   if (name === "clock") return [[...Array.from({ length: 21 }, (_, index) => { const angle = index / 20 * Math.PI * 2; return point(.5 + Math.cos(angle) * .42, .5 + Math.sin(angle) * .42); })], [point(.5, .26), point(.5, .5), point(.7, .62)]];
   return [[point(.5, .9), point(.12, .5), point(.16, .2), point(.38, .1), point(.5, .3), point(.62, .1), point(.84, .2), point(.88, .5), point(.5, .9)]];
+}
+
+/* ---------------------------------------------------- *
+ * Annotation helpers: the marks people make when they   *
+ * explain something on a board.                         *
+ * ---------------------------------------------------- */
+
+export type AnnotationKind = "brace" | "bubble" | "arc" | "dimension";
+export const annotationKinds: AnnotationKind[] = ["brace", "bubble", "arc", "dimension"];
+type AnnotationOperation = Extract<CanvasOperation, { type: "create_annotation" }>;
+
+/** Ids an annotation creates: one drawn shape, plus its label when there is text. */
+export function annotationElementIds(operation: AnnotationOperation, prefix: string): string[] {
+  const base = operation.kind === "bubble" ? `${prefix}-box` : prefix;
+  return operation.text?.trim() ? [base, `${prefix}-text`] : [base];
+}
+
+/**
+ * Geometry for one annotation, written as SVG path data and read back through the same parser the
+ * agent's own paths go through, so both take exactly one code path.
+ */
+export function annotationGeometry(operation: AnnotationOperation): { points: Array<{ x: number; y: number }>; closed: boolean; label: { x: number; y: number; width: number; align: "left" | "center" } | null } {
+  const { x, y } = operation;
+  const width = Math.max(8, operation.width); const height = Math.max(8, operation.height);
+  const direction = operation.direction ?? (operation.kind === "brace" ? (height >= width ? "left" : "up") : operation.kind === "bubble" ? "down" : "up");
+  const round = (value: number): number => Math.round(value * 100) / 100;
+  const path = (parts: Array<string | number>): string => parts.map((part) => typeof part === "number" ? round(part) : part).join(" ");
+  const parse = (d: string, closed: boolean, label: { x: number; y: number; width: number; align: "left" | "center" } | null) => ({ points: parseSvgPath(d).flat(), closed, label });
+
+  if (operation.kind === "brace") {
+    // A curly brace: two shoulders meeting at a tip that points at whatever is being called out.
+    const vertical = direction === "left" || direction === "right";
+    const depth = vertical ? width : height;
+    const span = vertical ? height : width;
+    const along = (fraction: number): number => (vertical ? y : x) + span * fraction;
+    const across = (fraction: number): number => (vertical ? x : y) + (direction === "left" || direction === "up" ? depth * fraction : depth * (1 - fraction));
+    const at = (fraction: number, level: number): [number, number] => vertical ? [across(level), along(fraction)] : [along(fraction), across(level)];
+    const d = path(["M", ...at(0, 1), "Q", ...at(0, .35), ...at(.18, .35), "L", ...at(.4, .35), "Q", ...at(.5, .35), ...at(.5, 0),
+      "Q", ...at(.5, .35), ...at(.6, .35), "L", ...at(.82, .35), "Q", ...at(1, .35), ...at(1, 1)]);
+    // The tip points at the content, so the label belongs on the brace's back, never over it.
+    const [tipX, tipY] = at(.5, 0);
+    const label = operation.text?.trim()
+      ? vertical
+        ? { x: direction === "left" ? x + width + 12 : x - 220, y: tipY - 12, width: 208, align: "left" as const }
+        : { x: tipX - 110, y: direction === "up" ? y + height + 10 : y - 34, width: 220, align: "center" as const }
+      : null;
+    return parse(d, false, label);
+  }
+
+  if (operation.kind === "arc") {
+    // A bow drawn over or under a span, for "this whole part" gestures.
+    const up = direction !== "down";
+    const d = path(["M", x, up ? y + height : y, "Q", x + width / 2, up ? y - height * .35 : y + height * 1.35, x + width, up ? y + height : y]);
+    const label = operation.text?.trim() ? { x: x + width / 2 - 110, y: up ? y - 30 : y + height + 8, width: 220, align: "center" as const } : null;
+    return parse(d, false, label);
+  }
+
+  if (operation.kind === "dimension") {
+    // A measured span: end ticks and one line, drawn in a single stroke.
+    const tick = Math.max(8, Math.min(18, height / 2));
+    const middle = y + height / 2;
+    const d = path(["M", x, middle - tick, "L", x, middle + tick, "L", x, middle, "L", x + width, middle, "L", x + width, middle - tick, "L", x + width, middle + tick]);
+    const label = operation.text?.trim() ? { x: x + width / 2 - 110, y: middle - tick - 26, width: 220, align: "center" as const } : null;
+    return parse(d, false, label);
+  }
+
+  // Speech bubble: a rounded box with a tail pointing at what it is talking about.
+  const radius = Math.min(18, width / 4, height / 4);
+  const tail = Math.min(26, height / 3, width / 3);
+  const horizontal = direction === "left" || direction === "right";
+  const d = horizontal
+    ? path(["M", x + radius, y, "L", x + width - radius, y, "Q", x + width, y, x + width, y + radius,
+        ...(direction === "right" ? ["L", x + width, y + height / 2 - tail / 2, "L", x + width + tail, y + height / 2, "L", x + width, y + height / 2 + tail / 2] : []),
+        "L", x + width, y + height - radius, "Q", x + width, y + height, x + width - radius, y + height,
+        "L", x + radius, y + height, "Q", x, y + height, x, y + height - radius,
+        ...(direction === "left" ? ["L", x, y + height / 2 + tail / 2, "L", x - tail, y + height / 2, "L", x, y + height / 2 - tail / 2] : []),
+        "L", x, y + radius, "Q", x, y, x + radius, y, "Z"])
+    : path(["M", x + radius, y,
+        ...(direction === "up" ? ["L", x + width / 2 - tail / 2, y, "L", x + width / 2, y - tail, "L", x + width / 2 + tail / 2, y] : []),
+        "L", x + width - radius, y, "Q", x + width, y, x + width, y + radius,
+        "L", x + width, y + height - radius, "Q", x + width, y + height, x + width - radius, y + height,
+        ...(direction === "down" ? ["L", x + width / 2 + tail / 2, y + height, "L", x + width / 2, y + height + tail, "L", x + width / 2 - tail / 2, y + height] : []),
+        "L", x + radius, y + height, "Q", x, y + height, x, y + height - radius,
+        "L", x, y + radius, "Q", x, y, x + radius, y, "Z"]);
+  const padding = 14;
+  return parse(d, true, operation.text?.trim() ? { x: x + padding, y: y + padding, width: width - padding * 2, align: "left" as const } : null);
 }
 
 /** Outline points for the shape kinds that compile to polygons instead of primitives. */
@@ -686,7 +804,9 @@ export function plannedElementIds(operation: CanvasOperation): string[] {
   const explicit = "id" in operation && typeof operation.id === "string" ? operation.id : undefined;
   if (!explicit) return [];
   switch (operation.type) {
-    case "create_text": case "create_highlight": case "create_shape": case "create_arrow": case "create_stroke": case "create_polygon": case "create_path": case "connect": return [explicit];
+    case "create_text": case "create_highlight": case "create_shape": case "create_arrow": case "create_stroke": case "create_polygon": case "connect": return [explicit];
+    case "create_path": return operation.d ? parseSvgPath(operation.d).map((_, index) => `${explicit}-${index}`) : [explicit];
+    case "create_annotation": return annotationElementIds(operation, explicit);
     case "create_note": return [`${explicit}-card`, `${explicit}-text`];
     case "create_callout": return operation.anchorId ? [`${explicit}-box`, `${explicit}-text`, `${explicit}-leader`] : [`${explicit}-box`, `${explicit}-text`];
     case "create_frame": return operation.title ? [`${explicit}-border`, `${explicit}-title`] : [`${explicit}-border`];
@@ -700,7 +820,8 @@ export function plannedElementIds(operation: CanvasOperation): string[] {
 export function plannedGroupIds(operation: CanvasOperation): string[] {
   if (operation.type === "group" && operation.groupId) return [operation.groupId];
   if (!("id" in operation) || typeof operation.id !== "string") return [];
-  return ["create_note", "create_frame", "create_table", "create_icon", "create_callout"].includes(operation.type) ? [operation.id] : [];
+  if (operation.type === "create_path") return operation.d && parseSvgPath(operation.d).length > 1 ? [operation.id] : [];
+  return ["create_note", "create_frame", "create_table", "create_icon", "create_callout", "create_annotation"].includes(operation.type) ? [operation.id] : [];
 }
 
 /** Existing ids an operation reads or mutates. A missing target makes the operation a silent no-op. */
@@ -714,6 +835,27 @@ export function operationTargetIds(operation: CanvasOperation): string[] {
   if (operation.type === "ungroup" && operation.groupId) targets.push(operation.groupId);
   if (operation.type.startsWith("create_") && "parentId" in operation && typeof operation.parentId === "string") targets.push(operation.parentId);
   return targets;
+}
+
+/**
+ * Where a creation operation would land, for the operations that place a block of content.
+ * Free drawing, connectors, callouts, highlights and markers are deliberately left out: those are
+ * meant to cross other things. Anything parented into a container is left out too, because the
+ * container owns what is inside it.
+ */
+export function plannedBounds(operation: CanvasOperation): Bounds | null {
+  if ("parentId" in operation && typeof operation.parentId === "string") return null;
+  const box = (x: number, y: number, width: number, height: number): Bounds => ({ minX: x, minY: y, maxX: x + width, maxY: y + height });
+  switch (operation.type) {
+    case "create_text": {
+      const width = operation.width ?? 260;
+      return box(operation.x, operation.y, width, estimateTextHeight(operation.text, width, operation.fontSize ?? 20, { fontFamily: operation.fontFamily, fontWeight: operation.fontWeight }));
+    }
+    case "create_note": return box(operation.x, operation.y, operation.width ?? 220, operation.height ?? 140);
+    case "create_table": case "create_frame": case "create_shape": return box(operation.x, operation.y, operation.width, operation.height);
+    case "create_icon": return box(operation.x, operation.y, operation.size ?? 32, operation.size ?? 32);
+    default: return null;
+  }
 }
 
 export type PreflightResult = { ok: true } | { ok: false; error: "id_conflict" | "missing_target"; ids: string[]; instruction: string };

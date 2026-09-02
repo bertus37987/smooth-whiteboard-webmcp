@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { CollaborationSession, CollaborationView } from "../web-src/collaboration";
 import { BoardStore } from "../web-src/store";
-import { CanvasOperation, resolveGestureElements } from "../web-src/model";
+import { elementBounds } from "../src/document";
+import { Bounds, CanvasOperation, annotationKinds, boundsOverlapArea, iconNames, plannedElementIds, resolveGestureElements } from "../web-src/model";
 import { InkPoint } from "../src/strokes";
 import { registerWhiteboardTools } from "../web-src/webmcp";
 
@@ -470,7 +471,7 @@ async function main(): Promise<void> {
     const registered: Array<{ name: string; description: string; inputSchema?: Record<string, unknown>; annotations?: Record<string, unknown> }> = [];
     Object.defineProperty(globalThis, "document", { configurable: true, value: { modelContext: { registerTool: (tool: { name: string; description: string; inputSchema?: Record<string, unknown>; annotations?: Record<string, unknown> }) => { registered.push(tool); } } } });
     const available = await registerWhiteboardTools({
-      session: () => ({}), waitForTurn: async () => ({}), inspect: () => ({}), focus: () => ({}), publishPlan: () => ({}), apply: async () => ({}), compose: async () => ({}), complete: () => ({})
+      session: () => ({}), waitForTurn: async () => ({}), inspect: () => ({}), focus: () => ({}), publishPlan: () => ({}), apply: async () => ({}), compose: async () => ({}), complete: () => ({}), snapshot: async () => null
     }, new AbortController().signal);
     assert.equal(available, true);
     for (const name of ["publish_agent_plan", "apply_whiteboard_changes", "create_structured_visual", "complete_whiteboard_contribution", "focus_whiteboard_region"]) {
@@ -540,6 +541,131 @@ async function main(): Promise<void> {
     assert.ok(test.store.document.elements.some((element) => element.id === "correction"), "human corrections survive the second agent turn");
     assert.equal(test.session.state(), "complete");
     assert.equal(test.session.canHumanMutateBoard(), true);
+  }
+
+  /* TEST 24 - the agent is told what is taken and what is free, and the two never overlap. */
+  {
+    const test = harness();
+    humanApply(test.store, box("left", 0, 0, 300, 200), box("right", 600, 0, 300, 200));
+    const view = test.session.inspect("all");
+    const occupied = view.occupied as Array<{ id: string; bounds: Bounds; label: string | null }>;
+    assert.deepEqual(occupied.map((unit) => unit.id).sort(), ["left", "right"], "every drawn thing is one occupied unit");
+    const free = view.freeRegions as Bounds[];
+    assert.ok(free.length > 0, "and the empty parts of the board are named");
+    for (const region of free) for (const unit of occupied) {
+      assert.equal(boundsOverlapArea(region, unit.bounds), 0, "a free region never overlaps something that is taken");
+    }
+    const needed = test.session.inspect("all", "summary", undefined, { width: 300, height: 200 });
+    const origin = needed.suggestedOrigin as { x: number; y: number };
+    const target = { minX: origin.x, minY: origin.y, maxX: origin.x + 300, maxY: origin.y + 200 };
+    for (const unit of occupied) assert.equal(boundsOverlapArea(target, unit.bounds), 0, "the suggested origin is somewhere the new block actually fits");
+  }
+
+  /* TEST 25 - a batch aimed at occupied canvas is refused whole, and says how to get out of it. */
+  {
+    const test = harness();
+    humanApply(test.store, box("diagram", 0, 0, 400, 300));
+    test.session.submit({ promptText: "Add a card", instructionInk: [] });
+    const lease = await claim(test);
+    const before = test.store.document.elements.length;
+    const refused = await test.session.apply([{ type: "create_note", id: "on-top", x: 200, y: 150, width: 260, height: 160, text: "Landing on the drawing" }], undefined, lease.leaseToken);
+    assert.equal(refused.ok, false);
+    assert.equal(refused.error, "placement_collision");
+    assert.deepEqual(refused.ids, ["diagram"], "the answer names what is in the way");
+    assert.equal(test.store.document.elements.length, before, "and nothing at all was drawn");
+    const shift = refused.suggestedTranslation as { dx: number; dy: number };
+    const moved = await test.session.apply([{ type: "create_note", id: "on-top", x: 200 + shift.dx, y: 150 + shift.dy, width: 260, height: 160, text: "Beside it instead" }], undefined, lease.leaseToken);
+    assert.equal(moved.ok, true, "following suggestedTranslation lands in free space");
+
+    /* Clearing the way in the same call is allowed: the check reads the batch, not just the board. */
+    const cleared = await test.session.apply([
+      { type: "translate", ids: ["diagram"], dx: 0, dy: -900 },
+      { type: "create_note", id: "in-the-freed-space", x: 20, y: 20, width: 240, height: 140, text: "Where the drawing used to be" }
+    ], undefined, lease.leaseToken);
+    assert.equal(cleared.ok, true, "moving the existing element aside first is accepted");
+  }
+
+  /* TEST 26 - SVG path data becomes real geometry inside the box it was given. */
+  {
+    const test = harness();
+    test.session.submit({ promptText: "Draw a wave", instructionInk: [] });
+    const lease = await claim(test);
+    const applied = await test.session.apply([{ type: "create_path", id: "wave", d: "M 0 50 C 25 0 75 100 100 50 A 20 20 0 0 1 140 50", x: 400, y: 300, width: 200, height: 100 }], undefined, lease.leaseToken);
+    assert.equal(applied.ok, true);
+    const drawn = test.store.document.elements.filter((element) => element.id.startsWith("wave-"));
+    assert.equal(drawn.length, 1, "one subpath becomes one editable element");
+    assert.deepEqual(applied.createdIds, ["wave-0"], "and preflight predicted its id");
+    const bounds = elementBounds(drawn[0]);
+    assert.ok(bounds.minX >= 399 && bounds.maxX <= 601 && bounds.minY >= 299 && bounds.maxY <= 401, "the curve lands inside the box it was fitted to");
+    assert.ok(drawn[0].type === "shape" && drawn[0].points.length > 20, "curves and arcs are sampled, not straightened");
+  }
+
+  /* TEST 27 - every symbol and every annotation creates exactly the ids preflight promises. */
+  {
+    const test = harness();
+    test.session.submit({ promptText: "Symbols", instructionInk: [] });
+    const lease = await claim(test);
+    let cursor = 0;
+    for (const name of iconNames) {
+      const operation: CanvasOperation = { type: "create_icon", id: "icon-" + name, name, x: cursor, y: -400, size: 40 };
+      const applied = await test.session.apply([operation], undefined, lease.leaseToken);
+      assert.equal(applied.ok, true, name + " draws");
+      assert.deepEqual(applied.createdIds, plannedElementIds(operation), name + " creates exactly the ids preflight predicted");
+      cursor += 200;
+    }
+    for (const [index, kind] of annotationKinds.entries()) {
+      const operation: CanvasOperation = { type: "create_annotation", id: "note-" + kind, kind, x: index * 400, y: 400, width: 220, height: 160, text: kind + " label" };
+      const applied = await test.session.apply([operation], undefined, lease.leaseToken);
+      assert.equal(applied.ok, true, kind + " draws");
+      assert.deepEqual(applied.createdIds, plannedElementIds(operation), kind + " creates exactly the ids preflight predicted");
+      const shape = test.store.document.elements.find((element) => element.id === (kind === "bubble" ? "note-" + kind + "-box" : "note-" + kind));
+      assert.ok(shape && shape.type === "shape" && shape.points.length > 3, kind + " has real geometry");
+    }
+  }
+
+  /* TEST 28 - the human keeps the board beside the proposal, and a rollback spares their work. */
+  {
+    const test = harness();
+    humanApply(test.store, box("existing", 0, 0, 200, 160));
+    test.session.submit({ promptText: "Add a panel", instructionInk: [] });
+    const lease = await claim(test);
+    await test.session.apply([
+      { type: "create_note", id: "panel", x: 900, y: 0, width: 260, height: 180, text: "Agent panel" },
+      { type: "translate", ids: ["existing"], dx: 0, dy: 40 }
+    ], undefined, lease.leaseToken);
+
+    assert.ok(test.session.agentRegion(), "while the agent writes it owns the patch it drew in");
+    assert.equal(test.session.canHumanMutateAt({ minX: 950, minY: 20, maxX: 1000, maxY: 60 }), false, "the human may not draw inside it");
+    assert.equal(test.session.canHumanMutateAt({ minX: -600, minY: -600, maxX: -500, maxY: -500 }), true, "but anywhere else the board is still theirs");
+    assert.equal(test.session.canHumanMutateBoard(), false, "whole-document actions stay locked");
+
+    // The human draws beside the proposal while it is still open.
+    humanApply(test.store, { type: "create_stroke", id: "parallel", points: [point(-600, -600), point(-500, -500)] });
+    test.session.complete("Panel added", lease.leaseToken);
+    assert.equal(test.session.reject(), true);
+
+    const ids = test.store.document.elements.map((element) => element.id);
+    assert.equal(ids.includes("panel-card"), false, "rejecting removes what the agent drew");
+    assert.ok(ids.includes("parallel"), "and leaves the stroke the human drew beside it");
+    const restored = test.store.document.elements.find((element) => element.id === "existing")!;
+    assert.equal(elementBounds(restored).minY, 0, "an element the agent moved goes back where it was");
+  }
+
+  /* TEST 29 - with automatic acceptance on, a finished turn is simply part of the board. */
+  {
+    const test = harness();
+    test.store.document.settings.autoAcceptAgent = true;
+    test.session.submit({ promptText: "Sketch it", instructionInk: [] });
+    const lease = await claim(test);
+    await test.session.apply([{ type: "create_note", id: "kept", x: 0, y: 0, width: 240, height: 140, text: "Kept without asking" }], undefined, lease.leaseToken);
+    const done = test.session.complete("Done", lease.leaseToken);
+    assert.equal(done.autoAccepted, true);
+    assert.equal(done.awaitingHumanDecision, false);
+    assert.equal(test.session.state(), "complete", "there is no review step to sit in");
+    assert.equal(test.session.canHumanMutateBoard(), true, "so the human is never locked out waiting to click accept");
+    assert.ok(test.store.document.elements.some((element) => element.id === "kept-card"));
+    assert.equal(test.store.undo(), true);
+    assert.equal(test.store.document.elements.some((element) => element.id === "kept-card"), false, "and one undo takes the whole proposal back");
   }
 
   console.log("collaboration tests: ok");

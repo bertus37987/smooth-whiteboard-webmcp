@@ -34,6 +34,20 @@ async function renderPage(page: ExportPage, scale: number, background = "#ffffff
   await Promise.all(imagePromises); return canvas;
 }
 
+/**
+ * The whole board as one base64 PNG, capped at maxSize on the long edge. This is what the agent
+ * gets when it asks to look at the canvas, so it stays small enough to be worth sending.
+ */
+export async function boardImage(whiteboard: WhiteboardDocument, maxSize = 1024): Promise<{ data: string; mimeType: string } | null> {
+  const bounds = boardBounds(whiteboard.elements);
+  if (!bounds) return null;
+  const page = { name: "Whiteboard", bounds, elements: whiteboard.elements };
+  const longest = Math.max(1, bounds.maxX - bounds.minX, bounds.maxY - bounds.minY);
+  const canvas = await renderPage(page, Math.min(2, maxSize / longest));
+  const url = canvas.toDataURL("image/png");
+  return { data: url.slice(url.indexOf(",") + 1), mimeType: "image/png" };
+}
+
 function svgForElement(element: PageElement, offsetX: number, offsetY: number): string {
   const opacity = element.opacity ?? 1; const translate = `translate(${-offsetX} ${-offsetY})`;
   if (element.type === "image") return `<image transform="${translate}" x="${element.x}" y="${element.y}" width="${element.width}" height="${element.height}" href="${escapeXml(element.dataUrl)}" opacity="${opacity}"/>`;
