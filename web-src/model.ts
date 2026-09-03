@@ -455,11 +455,11 @@ export function lintBoard(document: WhiteboardDocument): BoardLintIssue[] {
     const group = groupOf.get(text.id); if (!group) return null;
     const shapes = (document.groups?.[group] ?? []).map((id) => byId.get(id))
       .filter((member): member is Extract<PageElement, { type: "shape" }> => member?.type === "shape" && (member.kind === "rectangle" || member.kind === "ellipse"));
-    if (!shapes.length) return null;
-    const box = elementBounds(text);
-    // The card is the one the label starts inside; failing that, the biggest shape of the group.
-    return shapes.find((shape) => { const card = elementBounds(shape); return box.minX >= card.minX - 2 && box.minY >= card.minY - 2; })
-      ?? shapes.reduce((widest, shape) => (elementBounds(shape).maxX - elementBounds(shape).minX) > (elementBounds(widest).maxX - elementBounds(widest).minX) ? shape : widest);
+    // Only a "one card, one label" group has an unambiguous card. A collection group -- a whole drawing
+    // grouped together, six numbered markers among them -- would have the label matched to the wrong
+    // shape, and reported as spilling out of a marker it was never part of.
+    if (shapes.length !== 1) return null;
+    return shapes[0];
   };
 
   // Smallest filled shape first: a label is judged against the button it sits on, not the page behind it.

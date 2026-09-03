@@ -1188,6 +1188,21 @@ async function main(): Promise<void> {
     assert.equal(stacked.error, "batch_overlap", "a hand-placed stack is still caught");
   }
 
+  /* TEST 54 - a collection group does not produce spills-card false alarms. */
+  {
+    const test = harness();
+    // A drawing grouped as one unit: several shapes and their number labels together. The old
+    // spills-card rule matched a label to the wrong shape in the group and reported it as spilling.
+    humanApply(test.store,
+      { type: "create_shape", id: "m1", kind: "ellipse", x: 0, y: 0, width: 34, height: 34, filled: true, fillColor: "#2457e6", fillOpacity: 1 },
+      { type: "create_text", id: "m1t", x: 0, y: 5, width: 34, text: "1", fontSize: 19, textAlign: "center" },
+      { type: "create_shape", id: "m2", kind: "ellipse", x: 400, y: 300, width: 34, height: 34, filled: true, fillColor: "#16833b", fillOpacity: 1 },
+      { type: "create_text", id: "m2t", x: 400, y: 305, width: 34, text: "2", fontSize: 19, textAlign: "center" },
+      { type: "group", groupId: "drawing", ids: ["m1", "m1t", "m2", "m2t"] });
+    assert.deepEqual(lintBoard(test.store.document).filter((issue) => issue.code === "spills-card"), [],
+      "a numbered marker inside a collection is not judged against another marker in the same group");
+  }
+
   console.log("collaboration tests: ok");
 }
 
