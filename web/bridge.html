@@ -15,7 +15,8 @@
   agent. It is a stand-in, not an agent — it decides nothing and calls nothing on its own. Open
   index.html instead to use the board the way a person would.
 
-    await window.whiteboardTools.list()             -> the registered tool names
+    await window.whiteboardTools.list()              -> the registered tool names
+    window.whiteboardTools.describe(name?)          -> what an agent is told about them
     await window.whiteboardTools.call(name, input)   -> the raw content array
     await window.whiteboardTools.json(name, input)   -> the first text part, parsed
 -->
@@ -26,6 +27,10 @@
   };
   window.whiteboardTools = {
     list: () => [...registered.keys()],
+    describe: (name) => {
+      const tools = name ? [registered.get(name)].filter(Boolean) : [...registered.values()];
+      return tools.map((tool) => ({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema, annotations: tool.annotations }));
+    },
     async call(name, input) {
       const tool = registered.get(name);
       if (!tool) throw new Error(`No tool named ${name}. Registered: ${[...registered.keys()].join(", ")}`);

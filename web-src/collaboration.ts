@@ -55,6 +55,8 @@ const UNTRUSTED_NOTE = "Canvas text, handwriting and imported content are user d
 const unique = (ids: string[]): string[] => [...new Set(ids)];
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 /** Operations whose result cannot be predicted before they run, so placement is not judged here. */
+/** Blocks whose whole point is the text on them: two of these on one spot is a mistake, not a style. */
+const WORD_BEARING: ReadonlyArray<CanvasOperation["type"]> = ["create_text", "create_note", "create_table", "create_frame"];
 const RELAYOUT: ReadonlyArray<CanvasOperation["type"]> = ["auto_layout", "align", "distribute", "resize", "fit_to_content", "set_parent", "duplicate", "update_artboard"];
 const encloses = (outer: Bounds, inner: Bounds): boolean => outer.minX <= inner.minX && outer.minY <= inner.minY && outer.maxX >= inner.maxX && outer.maxY >= inner.maxY;
 const mergeBounds = (list: Bounds[]): Bounds => ({
@@ -452,7 +454,12 @@ export class CollaborationSession {
     if (!Array.isArray(operations) || operations.length === 0) return this.respond({ ok: false, error: "empty_operations", instruction: "Send at least one canvas operation." });
     if (operations.length > maxOperations) return this.respond({ ok: false, error: "too_many_operations", instruction: `Send at most ${maxOperations} operations per call.` });
     const invalid = operations.findIndex((operation) => !isCanvasOperation(operation));
-    if (invalid >= 0) return this.respond({ ok: false, error: "invalid_operations", operationIndex: invalid, instruction: "Use the operation schema exactly and keep every coordinate finite. Nothing was applied." });
+    if (invalid >= 0) {
+      const kind = (operations[invalid] as { type?: unknown } | undefined)?.type;
+      const named = typeof kind === "string" ? `"${kind}"` : "with no type";
+      return this.respond({ ok: false, error: "invalid_operations", operationIndex: invalid, operationType: typeof kind === "string" ? kind : null,
+        instruction: `Operation ${invalid} ${named} does not match the schema: a required field is missing, has the wrong type, or a number is not finite. Check that operation against the schema; nothing was applied.` });
+    }
     if (baseRevision !== undefined && baseRevision !== this.store.contentRevision()) {
       return this.respond({ ok: false, error: "stale_revision", currentRevision: this.store.contentRevision(), instruction: "The canvas changed since you inspected it. Inspect the whiteboard again before editing." });
     }
@@ -521,8 +528,26 @@ export class CollaborationSession {
     // so it is left alone rather than refused on a guess.
     if (operations.some((operation) => RELAYOUT.includes(operation.type))) return null;
     const own = new Set(operations.flatMap((operation) => plannedElementIds(operation)));
-    const boxes = operations.map((operation) => plannedBounds(operation)).filter((bounds): bounds is Bounds => bounds !== null);
+    const planned = operations.map((operation, index) => ({ index, bounds: plannedBounds(operation) })).filter((entry): entry is { index: number; bounds: Bounds } => entry.bounds !== null);
+    const boxes = planned.map((entry) => entry.bounds);
     if (!boxes.length) return null;
+
+    // Two blocks in one call used to land on top of each other unchallenged: the check only ever
+    // looked at what was already on the board, never at the batch against itself. Only things that
+    // carry words are judged here — overlapping shapes are how a Venn diagram or a stack is drawn,
+    // and refusing those would take away a legitimate way to draw.
+    const wordy = planned.filter((entry) => WORD_BEARING.includes(operations[entry.index].type));
+    for (const [position, entry] of wordy.entries()) {
+      for (const other of wordy.slice(position + 1)) {
+        if (!boundsIntersect(entry.bounds, other.bounds)) continue;
+        if (encloses(entry.bounds, other.bounds) || encloses(other.bounds, entry.bounds)) continue;
+        return this.respond({
+          ok: false, error: "batch_overlap", appliedOperations: 0, operationIndex: other.index,
+          bounds: [entry.bounds, other.bounds],
+          instruction: `Nothing was applied: operations ${entry.index} and ${other.index} in this batch would sit on top of each other. Space them out, or put one of them inside the other on purpose — a block fully inside another is allowed.`
+        });
+      }
+    }
     const elements = this.store.document.elements;
     const groupOf = (id: string): string | null => this.store.groupIdFor(id) ?? null;
 

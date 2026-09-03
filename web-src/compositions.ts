@@ -466,6 +466,14 @@ function sequence(input: VisualCompositionInput, prefix: string): CanvasOperatio
  * Work in flight: columns of cards. The cards are ordinary notes, so the human drags them between
  * columns and the next agent turn sees that move as human feedback.
  */
+/**
+ * How much room a frame title really takes. create_frame lays it out 12px in from the top at size 28,
+ * so a long column name wraps to two lines and lands on whatever was placed under a fixed header.
+ */
+function frameTitleHeight(title: string, width: number): number {
+  return 24 + measureTextBlock({ text: title, width: Math.max(60, width - 36), fontSize: 28, fontWeight: 700, blockStyle: "heading-2", fontFamily: agentFont() }).height;
+}
+
 function board(input: VisualCompositionInput, prefix: string): CanvasOperation[] {
   const columns = input.columns ?? [];
   const x = input.x ?? -520; const y = input.y ?? -320;
@@ -476,7 +484,8 @@ function board(input: VisualCompositionInput, prefix: string): CanvasOperation[]
   const widths = columns.map((column) => cardWidth(column) + LANE_PAD * 2);
   const cardHeights = columns.map((column) => column.cards.map((card) => noteHeight(card.detail ? `${card.label}\n${card.detail}` : card.label, widths[columns.indexOf(column)] - LANE_PAD * 2, undefined, 84)));
   const columnHeight = Math.max(160, ...cardHeights.map((heights) => heights.reduce((total, height) => total + height + spacing.md, 0)));
-  const layout = laneLayout({ x, y: top, columns: columns.map((column, index) => ({ label: column.name, width: widths[index] })), rowHeights: [columnHeight + LANE_PAD], gap: spacing.md, headerHeight: 64, rowGap: 0 });
+  const headerHeight = Math.max(64, ...columns.map((column, index) => frameTitleHeight(`${column.name}  ·  ${column.cards.length}`, widths[index])));
+  const layout = laneLayout({ x, y: top, columns: columns.map((column, index) => ({ label: column.name, width: widths[index] })), rowHeights: [columnHeight + LANE_PAD], gap: spacing.md, headerHeight, rowGap: 0 });
 
   const operations: CanvasOperation[] = titleOperations(prefix, title, x, y, layout.width);
   columns.forEach((column, index) => {

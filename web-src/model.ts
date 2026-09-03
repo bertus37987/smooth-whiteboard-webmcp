@@ -422,7 +422,9 @@ function relativeLuminance(hex: string): number | null {
 }
 
 const CONTROL_ROLES = ["button", "input", "checkbox", "radio", "switch", "select", "tab", "tabs"];
-const CONTAINER_ROLES = ["artboard", "frame", "screen", "section", "modal", "list", "sidebar", "header", "navbar", "table-cell", "note"];
+/** Scenery: things other content is meant to sit on top of. A sticky note is not one of them —
+ *  listing it here quietly switched off overlap checking for the most common agent element. */
+const CONTAINER_ROLES = ["artboard", "frame", "screen", "section", "modal", "list", "sidebar", "header", "navbar", "table-cell"];
 
 /**
  * Design review the agent can act on. Every issue names the elements it is about, so the agent can

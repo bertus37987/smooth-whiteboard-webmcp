@@ -1010,6 +1010,68 @@ async function main(): Promise<void> {
     assert.ok(steps >= 1, "but never loses the ability to go back at all");
   }
 
+  /* TEST 47 - a batch may not stack itself, but overlapping shapes stay a way to draw. */
+  {
+    const test = harness();
+    test.session.submit({ promptText: "Notes", instructionInk: [] });
+    const lease = await claim(test);
+
+    const before = test.store.document.elements.length;
+    const stacked = await test.session.apply([
+      { type: "create_note", id: "z1", x: 0, y: 0, width: 240, text: "First" },
+      { type: "create_note", id: "z2", x: 20, y: 30, width: 240, text: "Second" },
+      { type: "create_note", id: "z3", x: 40, y: 60, width: 240, text: "Third" }
+    ], undefined, lease.leaseToken);
+    assert.equal(stacked.ok, false);
+    assert.equal(stacked.error, "batch_overlap", "notes dropped on each other in one call are refused");
+    assert.equal(test.store.document.elements.length, before, "and nothing was drawn");
+    assert.match(String(stacked.instruction), /0 and 1/, "the answer names which two operations clash");
+
+    const venn = await test.session.apply([
+      { type: "create_shape", id: "v1", kind: "ellipse", x: 0, y: 0, width: 220, height: 220, filled: true, fillColor: "#2457e6", fillOpacity: .25 },
+      { type: "create_shape", id: "v2", kind: "ellipse", x: 140, y: 0, width: 220, height: 220, filled: true, fillColor: "#16833b", fillOpacity: .25 }
+    ], undefined, lease.leaseToken);
+    assert.equal(venn.ok, true, "two overlapping circles are a Venn diagram, not a mistake");
+
+    const spaced = await test.session.apply([
+      { type: "create_note", id: "n1", x: 0, y: 600, width: 240, text: "First" },
+      { type: "create_note", id: "n2", x: 320, y: 600, width: 240, text: "Second" }
+    ], undefined, lease.leaseToken);
+    assert.equal(spaced.ok, true, "and notes side by side are fine");
+  }
+
+  /* TEST 48 - stacked notes are reported: a sticky note is not scenery. */
+  {
+    const test = harness();
+    humanApply(test.store,
+      { type: "create_note", id: "a", x: 0, y: 0, width: 240, text: "First" },
+      { type: "create_note", id: "b", x: 30, y: 40, width: 240, text: "Second" });
+    const overlaps = lintBoard(test.store.document).filter((issue) => issue.code === "overlap");
+    assert.ok(overlaps.length >= 1, "two notes on the same spot are a defect the lint names");
+
+    // A frame is scenery: content is meant to sit on it, and that must stay quiet.
+    const framed = harness();
+    humanApply(framed.store,
+      { type: "create_frame", id: "board", x: 0, y: 0, width: 600, height: 400, title: "Column" },
+      { type: "create_note", id: "inside", x: 40, y: 90, width: 240, text: "A card on the board" });
+    assert.deepEqual(lintBoard(framed.store.document).filter((issue) => issue.code === "overlap"), [], "a card inside its frame is the point of a frame");
+  }
+
+  /* TEST 49 - a rejected operation says which one and what kind it was. */
+  {
+    const test = harness();
+    test.session.submit({ promptText: "Broken", instructionInk: [] });
+    const lease = await claim(test);
+    const refused = await test.session.apply([
+      { type: "create_note", id: "fine", x: 0, y: 0, width: 240, text: "Fine" },
+      { type: "set_explanation_sequence", sequence: { id: "x", title: "X", steps: [] } }
+    ] as unknown as CanvasOperation[], undefined, lease.leaseToken);
+    assert.equal(refused.error, "invalid_operations");
+    assert.equal(refused.operationIndex, 1, "it points at the operation that is wrong");
+    assert.equal(refused.operationType, "set_explanation_sequence", "and says what kind it was");
+    assert.equal(/keep every coordinate finite\. Nothing was applied\.$/.test(String(refused.instruction)), false, "not the old catch-all sentence");
+  }
+
   console.log("collaboration tests: ok");
 }
 
