@@ -93,7 +93,7 @@ export class WhiteboardApp {
     liveSelectionIds: () => [...this.renderer.selectionIds],
     status: (text, duration) => this.setStatus(text, duration),
     refresh: () => { this.renderer.request(); this.updateUi(); },
-    operationDelay: () => 35,
+    operationDelay: () => new URLSearchParams(location.search).has("instant") ? 0 : 35,
     snapshot: (maxSize) => boardImage(this.store.document, maxSize)
   });
 
