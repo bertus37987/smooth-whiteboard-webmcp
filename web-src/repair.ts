@@ -94,6 +94,13 @@ export function repairComposition(operations: CanvasOperation[]): RepairedCompos
     if (!box || !label || box.type === "create_note" || box.type === "create_callout") continue;
     const ellipse = box.type === "create_shape" && box.kind === "ellipse";
     const padding = operationBounds(label).minY - box.y;
+    // A pill was asked for at a width. Fit the label into the ellipse rather than blowing the
+    // ellipse up to the label's box: measuring the box instead of the words made every input
+    // exactly sqrt(2) wider than requested, which pushed a phone mockup 40% off its own frame.
+    if (ellipse) {
+      const inside = snap(box.width * ELLIPSE_FIT - padding * 2);
+      if (inside > GRID * 4 && (label.width ?? 240) > inside) label.width = inside;
+    }
     const needed = textHeight(label) + Math.max(GRID, padding) * 2;
     const requiredHeight = snap(ellipse ? needed / ELLIPSE_FIT : needed);
     const requiredWidth = snap(ellipse ? ((label.width ?? 240) + padding * 2) / ELLIPSE_FIT : box.width);

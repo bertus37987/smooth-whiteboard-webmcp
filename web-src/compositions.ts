@@ -281,14 +281,16 @@ function uiWireframe(input: VisualCompositionInput, prefix: string): CanvasOpera
   for (const placement of placed) {
     const { node, role, w, h } = placement;
     if (role === "text") {
-      operations.push({ type: "create_text", id: idsFor(prefix, node).text, x: placement.x, y: placement.y, width: w, fontSize: typeScale.detail.fontSize, color: theme.text, text: node.detail ? `${node.label}\n${node.detail}` : node.label, semanticRole: role, parentId: artboardId });
+      operations.push({ type: "create_text", id: idsFor(prefix, node).text, x: placement.x, y: placement.y, width: w, fontSize: typeScale.detail.fontSize, color: theme.text, text: node.detail ? `${node.label}\n${node.detail}` : node.label, semanticRole: role, parentId: artboardId, fontFamily: "sans" });
       continue;
     }
     const card = cardOperations(prefix, node, placement.x, placement.y, w, h, role === "input" || role === "avatar");
     for (const operation of card) {
       if (operation.type === "create_shape" || operation.type === "create_text") operation.parentId = artboardId;
       if (operation.type === "create_shape") { operation.semanticRole = role; operation.fillColor = role === "button" ? theme.accent : theme.surface; operation.fillOpacity = 1; }
-      if (operation.type === "create_text") operation.color = role === "button" && relativeContrast(theme.accent) ? palette.surface : theme.text;
+      // A screen mockup is printed interface, not a sketch: its type stays plain whatever the board
+      // style is, and saying so here keeps measurement and rendering in step.
+      if (operation.type === "create_text") { operation.color = role === "button" && relativeContrast(theme.accent) ? palette.surface : theme.text; operation.fontFamily = "sans"; }
     }
     operations.push(...card);
   }
