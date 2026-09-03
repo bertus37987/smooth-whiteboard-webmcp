@@ -898,16 +898,21 @@ async function main(): Promise<void> {
 
     assert.equal(test.session.submit({ promptText: "Draw", instructionInk: [] }).ok, true);
     assert.equal(test.session.state(), "queued", "the note waits for an agent");
-    assert.equal(test.session.submit({ promptText: "Again", instructionInk: [] }).ok, false, "and a second note is refused while it waits");
+    // A second note takes over the queued one instead of being dropped in silence.
+    assert.equal(test.session.submit({ promptText: "Again", instructionInk: [] }).ok, true, "a second note replaces the first");
+    assert.equal(test.store.document.turn?.promptText, "Again", "the newest note is the one that waits");
     assert.equal(test.session.canWithdraw(), true);
     assert.equal(test.session.withdraw(), true);
     assert.equal(test.session.state(), "idle", "taking it back frees the bar");
-    assert.equal(test.session.submit({ promptText: "Again", instructionInk: [] }).ok, true, "so the next note goes through");
 
-    // Once an agent holds the turn the note is no longer the human's to pull away.
+    // A turn an agent claimed but is not actively streaming can still be taken back: otherwise a
+    // walked-away agent locks the bar for good, which is the whole bug this guards against.
+    test.session.submit({ promptText: "Third", instructionInk: [] });
     await claim(test);
-    assert.equal(test.session.canWithdraw(), false);
-    assert.equal(test.session.withdraw(), false, "a turn already being worked on cannot be withdrawn");
+    assert.equal(test.session.state(), "claimed");
+    assert.equal(test.session.canWithdraw(), true, "no live stream owns it, so the human can reclaim the board");
+    assert.equal(test.session.submit({ promptText: "Fresh", instructionInk: [] }).ok, true, "and a fresh note takes over a claimed-but-abandoned turn");
+    assert.equal(test.store.document.turn?.promptText, "Fresh");
 
     const app = readFileSync("web-src/app.ts", "utf8");
     assert.ok(app.includes("withdraw.hidden = !this.collaboration.canWithdraw()"), "the button shows exactly while there is something to take back");

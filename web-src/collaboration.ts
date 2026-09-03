@@ -186,7 +186,12 @@ export class CollaborationSession {
   submit(input: SubmitInput): SubmitResult {
     const state = this.state();
     if (state === "review") return { ok: false, reason: "awaiting_review", message: "Accept or reject the proposal first" };
-    if (["queued", "claimed", "planning", "working"].includes(state)) return { ok: false, reason: "agent_busy", message: state === "queued" ? "The note is already queued for the agent" : "The agent is still working on this turn" };
+    // A live stream is the only thing a new note must not interrupt. A turn sitting in claimed/
+    // planning/working with no active transaction is a turn whose agent walked away -- every
+    // discrete agent round leaves one behind -- and it used to block the bar for good with no
+    // escape. The human takes the board back: roll any half-done agent work away and start fresh.
+    if (this.transaction) return { ok: false, reason: "agent_busy", message: "The agent is still working on this turn" };
+    if (["claimed", "planning", "working"].includes(state) && this.store.hasAgentContribution()) this.store.undoAgentContribution();
 
     const promptText = input.promptText.trim().slice(0, 4000);
     const instructionInk = structuredClone(input.instructionInk).filter((stroke) => stroke.length > 0);
@@ -321,14 +326,19 @@ export class CollaborationSession {
    */
   withdraw(): boolean {
     const turn = this.store.document.turn;
-    if (turn?.status !== "queued") return false;
-    this.store.document.turn = null;
-    this.store.changed("metadata");
+    if (!turn || !OPEN.includes(turn.status) || this.transaction) return false;
+    // Give back any board the agent had already touched, then drop the turn entirely.
+    if (this.store.hasAgentContribution()) this.store.undoAgentContribution();
+    else { this.store.document.turn = null; this.store.changed("metadata"); }
     return true;
   }
 
-  /** Whether the human can take their note back right now. */
-  canWithdraw(): boolean { return this.store.document.turn?.status === "queued"; }
+  /** Whether the human can take the board back right now: any open turn that no live stream owns. */
+  canWithdraw(): boolean {
+    const turn = this.store.document.turn;
+    // Review has its own accept/reject; everywhere else an open turn no live stream owns can be dropped.
+    return Boolean(turn && OPEN.includes(turn.status) && turn.status !== "review") && !this.transaction;
+  }
 
   waitForTurn(timeoutMs: number, signal?: AbortSignal): Promise<AgentResponse> {
     const turn = this.store.document.turn;
