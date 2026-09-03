@@ -1113,6 +1113,55 @@ async function main(): Promise<void> {
     assert.ok(shellRules.some((rule) => rule.includes("resize:both")), "and the grip is still asked for");
   }
 
+  /* TEST 52 - a screen element can be designed, not just placed. */
+  {
+    const test = harness();
+    test.session.submit({ promptText: "Screen", instructionInk: [] });
+    const lease = await claim(test);
+    const composed = await test.session.compose({ kind: "ui_mockup", id: "screen", title: "Discover", x: 0, y: 0, width: 440,
+      theme: { background: "#ffffff", surface: "#f4f4f5", text: "#111111", accent: "#a3260c" },
+      nodes: [
+        { id: "bar", label: "Deliver to Hauptstrasse 12", role: "header", fill: "#16171a", fontWeight: 600 },
+        { id: "search", label: "Search restaurants", role: "input", width: 380, height: 56 },
+        { id: "photo", label: "Pizzeria Napoli", role: "image", width: 380, height: 124 },
+        { id: "name", label: "Pizzeria Napoli", role: "text", width: 250, fontSize: 24, fontWeight: 700 },
+        { id: "time", label: "25 min", role: "chip", width: 110, height: 40, fill: "#0f7a3d" },
+        { id: "price", label: "9,90 EUR", role: "price", width: 110, height: 44, fill: "#fdeee4", radius: 6 }
+      ] }, undefined, lease.leaseToken);
+    assert.equal(composed.ok, true);
+    const byId = new Map(test.store.document.elements.map((element) => [element.id, element]));
+
+    const bar = byId.get("screen-bar") as Extract<PageElement, { type: "shape" }>;
+    assert.equal(bar.fillColor, "#16171a", "an element keeps the background it asked for, not the theme's");
+    const barLabel = byId.get("screen-bar-label") as Extract<PageElement, { type: "text" }>;
+    assert.equal(barLabel.color, "#ffffff", "light type is chosen for a dark ground on its own");
+    assert.equal(barLabel.onFilledSurface, true, "and it says it sits on a surface, so the ink guard leaves it alone");
+
+    const search = byId.get("screen-search") as Extract<PageElement, { type: "shape" }>;
+    assert.equal(search.kind, "rectangle", "a search field is a rounded field, not an ellipse");
+    assert.ok((search.radius ?? 0) > 0, "with rounded corners");
+
+    const chip = byId.get("screen-time") as Extract<PageElement, { type: "shape" }>;
+    assert.equal(chip.fillColor, "#0f7a3d");
+    const chipBox = elementBounds(chip);
+    assert.ok(Math.abs((chip.radius ?? 0) - (chipBox.maxY - chipBox.minY) / 2) < 1, "a chip is a pill: its corners follow its own height");
+
+    const price = byId.get("screen-price") as Extract<PageElement, { type: "shape" }>;
+    assert.equal(price.radius, 6, "a radius that was asked for is the radius it gets");
+
+    const name = byId.get("screen-name-label") as Extract<PageElement, { type: "text" }>;
+    assert.equal(name.fontSize, 24, "a restaurant name is as large as it was asked to be");
+    assert.equal(name.fontWeight, 700);
+
+    assert.ok(byId.has("screen-photo"), "an image placeholder exists");
+    assert.ok(test.store.document.elements.some((element) => element.id.startsWith("screen-photo-cross")), "and it is crossed, so nobody takes it for a real picture");
+
+    assert.deepEqual(lintBoard(test.store.document).filter((issue) => issue.code === "overlap" || issue.code === "spills-card"), [],
+      "and a designed screen still lays out cleanly");
+    const frame = elementBounds(byId.get("screen-screen-border")!);
+    assert.equal(Math.round(frame.maxX - frame.minX), 440, "the phone stays the width it was asked for");
+  }
+
   console.log("collaboration tests: ok");
 }
 

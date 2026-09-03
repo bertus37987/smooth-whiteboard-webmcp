@@ -237,7 +237,7 @@ export function wrapTextLines(text: string, width: number, blockStyle: TextEleme
 export function drawText(context: CanvasRenderingContext2D, text: TextElement, fontFamily?: string): void {
   const family = fontFamily ?? textFontFamilies[text.fontFamily ?? "sans"];
   if (text.renderStyle === "sketch") { context.save(); context.globalAlpha *= .18; context.translate(.9, -.55); drawText(context, { ...text, renderStyle: "clean" }, family); context.restore(); }
-  context.save(); context.fillStyle = visibleInkColor(text.color); context.font = textFontString(text, family);
+  context.save(); context.fillStyle = text.onFilledSurface ? text.color : visibleInkColor(text.color); context.font = textFontString(text, family);
   context.textBaseline = "alphabetic";
   context.textAlign = text.textAlign ?? "left";
   const lines = wrapTextLines(text.text, text.width, text.blockStyle, (line) => context.measureText(line).width);

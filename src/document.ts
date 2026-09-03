@@ -38,6 +38,11 @@ export interface TextElement extends ElementMeta {
   width: number;
   /** Custom text-box height. Older documents derive it from fontSize. */
   height?: number;
+  /**
+   * This label sits on a filled shape, so its colour is used as given. Without it the guard that
+   * keeps near-white ink from vanishing on the white page turns light type on a dark bar dark too.
+   */
+  onFilledSurface?: boolean;
   fontSize: number;
   color: string;
   text: string;

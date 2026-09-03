@@ -12,11 +12,20 @@ export interface VisualNodeInput {
   label: string;
   detail?: string;
   parentId?: string;
-  role?: "primary" | "secondary" | "decision" | "frame" | "screen" | "header" | "navbar" | "sidebar" | "section" | "card" | "button" | "input" | "checkbox" | "radio" | "switch" | "select" | "tabs" | "list" | "modal" | "badge" | "avatar" | "divider" | "icon" | "callout" | "legend" | "example" | "warning" | "source" | "text";
+  role?: "primary" | "secondary" | "decision" | "frame" | "screen" | "header" | "navbar" | "sidebar" | "section" | "card" | "button" | "input" | "checkbox" | "radio" | "switch" | "select" | "tabs" | "list" | "modal" | "badge" | "avatar" | "divider" | "icon" | "image" | "price" | "chip" | "callout" | "legend" | "example" | "warning" | "source" | "text";
   x?: number;
   y?: number;
   width?: number;
   height?: number;
+  /* Per-element design. The theme sets the screen; these say how one element differs from it. */
+  /** Background of this one element — a green price, a red warning. */
+  fill?: string;
+  /** Overrides the colour the text would take from the theme or from the fill's contrast. */
+  textColor?: string;
+  /** Corner rounding: 0 is a sharp edge, a large number is a pill. */
+  radius?: number;
+  fontSize?: number;
+  fontWeight?: 400 | 500 | 600 | 700;
 }
 
 export interface VisualEdgeInput { fromId: string; toId: string; label?: string; detail?: string }
@@ -58,7 +67,7 @@ export function isVisualComposition(value: unknown): value is VisualCompositionI
   if (!value || typeof value !== "object") return false; const input = value as Record<string, unknown>;
   if (!(visualKinds as string[]).includes(String(input.kind))) return false;
   if (![input.x, input.y, input.width, input.height].every(optionalFinite)) return false;
-  if (input.nodes !== undefined && (!Array.isArray(input.nodes) || input.nodes.length > 40 || input.nodes.some((node) => !node || typeof node !== "object" || typeof node.id !== "string" || typeof node.label !== "string" || !optionalFinite(node.x) || !optionalFinite(node.y) || !optionalFinite(node.width) || !optionalFinite(node.height)))) return false;
+  if (input.nodes !== undefined && (!Array.isArray(input.nodes) || input.nodes.length > 40 || input.nodes.some((node) => !node || typeof node !== "object" || typeof node.id !== "string" || typeof node.label !== "string" || !optionalFinite(node.x) || !optionalFinite(node.y) || !optionalFinite(node.width) || !optionalFinite(node.height) || !optionalFinite(node.radius) || !optionalFinite(node.fontSize) || (node.fill !== undefined && typeof node.fill !== "string") || (node.textColor !== undefined && typeof node.textColor !== "string") || (node.fontWeight !== undefined && ![400, 500, 600, 700].includes(node.fontWeight))))) return false;
   if (input.edges !== undefined && (!Array.isArray(input.edges) || input.edges.length > 80 || input.edges.some((edge) => !edge || typeof edge !== "object" || typeof edge.fromId !== "string" || typeof edge.toId !== "string"))) return false;
   if (input.sections !== undefined && (!Array.isArray(input.sections) || input.sections.length > 20 || input.sections.some((section) => !section || typeof section !== "object" || typeof section.heading !== "string" || typeof section.body !== "string"))) return false;
   if (input.steps !== undefined && (!Array.isArray(input.steps) || input.steps.length > 30 || input.steps.some((step) => !step || typeof step !== "object" || typeof step.expression !== "string"))) return false;
@@ -94,18 +103,31 @@ function withAgentStyle<T>(style: AgentStyle | undefined, run: () => T): T {
 }
 
 const cardText = (node: VisualNodeInput): string => node.detail ? `${node.label}\n${node.detail}` : node.label;
-const cardFontSize = (node: VisualNodeInput): number => node.detail ? typeScale.detail.fontSize : typeScale.body.fontSize;
+const cardFontSize = (node: VisualNodeInput): number => node.fontSize ?? (node.detail ? typeScale.detail.fontSize : typeScale.body.fontSize);
+/** A restaurant name may be heavier than its rating; measuring has to know that too. */
+const cardFontWeight = (node: VisualNodeInput): 400 | 500 | 600 | 700 | undefined => node.fontWeight;
 const cardTextWidth = (width: number): number => Math.max(60, width - CARD_PADDING * 2);
+/** How tall a bare text row really is at the size it was asked for. */
+function textRowHeight(node: VisualNodeInput, width: number): number {
+  const text = node.detail ? `${node.label}
+${node.detail}` : node.label;
+  return Math.ceil(measureTextBlock({ text, width, fontSize: node.fontSize ?? typeScale.detail.fontSize, fontWeight: node.fontWeight, fontFamily: "sans" }).height) + 6;
+}
+
+/** Roles that read as a pill: their corners follow their own height. */
+const PILL_ROLES = ["chip", "badge", "input", "switch"];
+/** Whether a background is dark enough that black type on it would not be readable. */
+const onDarkGround = (colour: string): boolean => relativeContrast(colour);
 
 /** How tall a card has to be for its own text — measured with the renderer's font, not guessed. */
 export function cardHeight(node: VisualNodeInput, width: number, minimum = 96): number {
-  const measured = measureTextBlock({ text: cardText(node), width: cardTextWidth(width), fontSize: cardFontSize(node), fontFamily: agentFont() });
+  const measured = measureTextBlock({ text: cardText(node), width: cardTextWidth(width), fontSize: cardFontSize(node), fontWeight: cardFontWeight(node), fontFamily: agentFont() });
   return Math.max(minimum, Math.round(measured.height + CARD_PADDING * 2));
 }
 
 /** Narrowest a card may be before an unbreakable word spills out of it. */
 export function cardMinimumWidth(node: VisualNodeInput): number {
-  const measured = measureTextBlock({ text: cardText(node), width: 10000, fontSize: cardFontSize(node), fontFamily: agentFont() });
+  const measured = measureTextBlock({ text: cardText(node), width: 10000, fontSize: cardFontSize(node), fontWeight: cardFontWeight(node), fontFamily: agentFont() });
   return Math.ceil(measured.longestWord + CARD_PADDING * 2);
 }
 
@@ -145,11 +167,15 @@ function cardOperations(prefix: string, node: VisualNodeInput, x: number, y: num
   const ids = idsFor(prefix, node); const text = cardText(node); const fontSize = cardFontSize(node);
   const emphasized = node.role === "primary" || node.role === "button";
   const textWidth = cardTextWidth(width);
-  const measured = measureTextBlock({ text, width: textWidth, fontSize, fontFamily: agentFont() });
+  const measured = measureTextBlock({ text, width: textWidth, fontSize, fontWeight: cardFontWeight(node), fontFamily: agentFont() });
   const boxHeight = Math.max(height, Math.round(measured.height + CARD_PADDING * 2));
+  // What the element itself asks for wins over what the role would have given it.
+  const fill = node.fill ?? (accent ? accentTints[accents.indexOf(accent as typeof accents[number])] ?? palette.surface : emphasized ? palette.hairline : palette.surface);
+  const rounding = node.radius ?? (PILL_ROLES.includes(node.role ?? "") ? boxHeight / 2 : node.role === "button" || node.role === "input" ? radius.control : radius.card);
+  const ink = node.textColor ?? (node.fill && onDarkGround(node.fill) ? palette.surface : palette.ink);
   return [
-    { type: "create_shape", id: ids.shape, kind: ellipse ? "ellipse" : "rectangle", x, y, width, height: boxHeight, color: accent ?? palette.ink, strokeWidth: emphasized ? 4 : 2.5, fillColor: accent ? accentTints[accents.indexOf(accent as typeof accents[number])] ?? palette.surface : emphasized ? palette.hairline : palette.surface, fillOpacity: accent ? 1 : emphasized ? 0.32 : 1, radius: ellipse ? undefined : node.role === "button" || node.role === "input" ? radius.control : radius.card },
-    { type: "create_text", id: ids.text, x: x + CARD_PADDING, y: y + Math.max(CARD_PADDING * .6, (boxHeight - measured.height) / 2), width: textWidth, fontSize, color: palette.ink, text },
+    { type: "create_shape", id: ids.shape, kind: ellipse ? "ellipse" : "rectangle", x, y, width, height: boxHeight, color: node.fill ? node.fill : accent ?? palette.ink, strokeWidth: emphasized ? 4 : 2.5, fillColor: fill, fillOpacity: node.fill ? 1 : accent ? 1 : emphasized ? 0.32 : 1, radius: ellipse ? undefined : Math.min(rounding, boxHeight / 2, width / 2) },
+    { type: "create_text", id: ids.text, x: x + CARD_PADDING, y: y + Math.max(CARD_PADDING * .6, (boxHeight - measured.height) / 2), width: textWidth, fontSize, fontWeight: node.fontWeight, color: ink, text, onFilledSurface: true },
     { type: "group", groupId: ids.group, ids: [ids.shape, ids.text] }
   ];
 }
@@ -248,7 +274,7 @@ function uiWireframe(input: VisualCompositionInput, prefix: string): CanvasOpera
   const x = input.x ?? -520; const y = input.y ?? -330; const width = input.width ?? 1040;
   const theme = { background: input.theme?.background ?? palette.surface, surface: input.theme?.surface ?? palette.surface, text: input.theme?.text ?? palette.ink, accent: input.theme?.accent ?? palette.ink };
   const artboardId = `${prefix}-screen-border`;
-  const defaults: Record<string, { w: number; h: number }> = { header: { w: width - 60, h: 76 }, navbar: { w: width - 60, h: 68 }, sidebar: { w: 220, h: 320 }, section: { w: 520, h: 260 }, card: { w: 250, h: 150 }, button: { w: 180, h: 56 }, input: { w: 260, h: 56 }, checkbox: { w: 180, h: 48 }, radio: { w: 180, h: 48 }, switch: { w: 120, h: 48 }, select: { w: 240, h: 56 }, tabs: { w: width - 60, h: 52 }, list: { w: 320, h: 220 }, modal: { w: 440, h: 300 }, badge: { w: 110, h: 42 }, avatar: { w: 72, h: 72 }, divider: { w: width - 60, h: 12 }, icon: { w: 48, h: 48 }, text: { w: 300, h: 70 }, frame: { w: 420, h: 280 } };
+  const defaults: Record<string, { w: number; h: number }> = { header: { w: width - 60, h: 76 }, navbar: { w: width - 60, h: 68 }, sidebar: { w: 220, h: 320 }, section: { w: 520, h: 260 }, card: { w: 250, h: 150 }, button: { w: 180, h: 56 }, input: { w: 260, h: 56 }, checkbox: { w: 180, h: 48 }, radio: { w: 180, h: 48 }, switch: { w: 120, h: 48 }, select: { w: 240, h: 56 }, tabs: { w: width - 60, h: 52 }, list: { w: 320, h: 220 }, modal: { w: 440, h: 300 }, badge: { w: 110, h: 42 }, avatar: { w: 72, h: 72 }, divider: { w: width - 60, h: 12 }, icon: { w: 48, h: 48 }, text: { w: 300, h: 70 }, frame: { w: 420, h: 280 }, image: { w: 260, h: 160 }, price: { w: 96, h: 44 }, chip: { w: 120, h: 40 } };
   const nodes = input.nodes ?? []; const margin = 30; const gap = spacing.md;
   const left = x + margin; const right = x + width - margin;
   // Flow the components instead of forcing them into three fixed columns.
@@ -258,7 +284,7 @@ function uiWireframe(input: VisualCompositionInput, prefix: string): CanvasOpera
   const placed = nodes.map((node) => {
     const role = node.role ?? "card"; const size = defaults[role] ?? defaults.card;
     const w = node.width ?? Math.min(Math.max(size.w, role === "text" ? 0 : cardMinimumWidth(node)), right - flowLeft);
-    const h = node.height ?? (role === "text" ? size.h : Math.max(size.h, cardHeight(node, w, 0)));
+    const h = node.height ?? (role === "text" ? Math.max(size.h, textRowHeight(node, w)) : Math.max(size.h, cardHeight(node, w, 0)));
     if (node.x !== undefined && node.y !== undefined) { lowest = Math.max(lowest, node.y + h); return { node, role, x: node.x, y: node.y, w, h }; }
     if (role === "sidebar") {
       const placement = { node, role, x: left, y: cursorY, w, h: node.height ?? Math.max(size.h, cardHeight(node, w, 0)) };
@@ -281,16 +307,33 @@ function uiWireframe(input: VisualCompositionInput, prefix: string): CanvasOpera
   for (const placement of placed) {
     const { node, role, w, h } = placement;
     if (role === "text") {
-      operations.push({ type: "create_text", id: idsFor(prefix, node).text, x: placement.x, y: placement.y, width: w, fontSize: typeScale.detail.fontSize, color: theme.text, text: node.detail ? `${node.label}\n${node.detail}` : node.label, semanticRole: role, parentId: artboardId, fontFamily: "sans" });
+      operations.push({ type: "create_text", id: idsFor(prefix, node).text, x: placement.x, y: placement.y, width: w, fontSize: node.fontSize ?? typeScale.detail.fontSize, fontWeight: node.fontWeight, color: node.textColor ?? theme.text, text: node.detail ? `${node.label}\n${node.detail}` : node.label, semanticRole: role, parentId: artboardId, fontFamily: "sans" });
       continue;
     }
-    const card = cardOperations(prefix, node, placement.x, placement.y, w, h, role === "input" || role === "avatar");
+    if (role === "image") {
+      // A photo that is not there yet: the crossed box every mockup uses, so nobody mistakes it
+      // for a real picture and the caption still says what belongs there.
+      const ids = idsFor(prefix, node);
+      operations.push(
+        { type: "create_shape", id: ids.shape, kind: "rectangle", x: placement.x, y: placement.y, width: w, height: h, color: node.fill ?? palette.hairline, strokeWidth: 2, fillColor: node.fill ?? theme.surface, fillOpacity: 1, radius: node.radius ?? radius.card, semanticRole: "image", parentId: artboardId, name: node.label },
+        { type: "create_path", id: `${ids.shape}-cross`, d: "M 0 0 L 100 100 M 100 0 L 0 100", x: placement.x + 12, y: placement.y + 12, width: w - 24, height: h - 24, color: palette.hairline, strokeWidth: 1.5, renderStyle: "clean" },
+        { type: "create_text", id: ids.text, x: placement.x + CARD_PADDING, y: placement.y + h - 34, width: w - CARD_PADDING * 2, fontSize: typeScale.caption.fontSize, fontWeight: node.fontWeight, color: node.textColor ?? theme.text, text: node.label, fontFamily: "sans", parentId: artboardId },
+        { type: "group", groupId: ids.group, ids: [ids.shape, `${ids.shape}-cross-0`, `${ids.shape}-cross-1`, ids.text] }
+      );
+      continue;
+    }
+    const card = cardOperations(prefix, node, placement.x, placement.y, w, h, role === "avatar");
     for (const operation of card) {
       if (operation.type === "create_shape" || operation.type === "create_text") operation.parentId = artboardId;
-      if (operation.type === "create_shape") { operation.semanticRole = role; operation.fillColor = role === "button" ? theme.accent : theme.surface; operation.fillOpacity = 1; }
+      // The theme paints the screen; anything the element asked for itself stays untouched.
+      if (operation.type === "create_shape" && !node.fill) { operation.semanticRole = role; operation.fillColor = role === "button" ? theme.accent : theme.surface; operation.fillOpacity = 1; }
+      else if (operation.type === "create_shape") operation.semanticRole = role;
       // A screen mockup is printed interface, not a sketch: its type stays plain whatever the board
       // style is, and saying so here keeps measurement and rendering in step.
-      if (operation.type === "create_text") { operation.color = role === "button" && relativeContrast(theme.accent) ? palette.surface : theme.text; operation.fontFamily = "sans"; }
+      if (operation.type === "create_text") {
+        if (!node.textColor) operation.color = node.fill ? (onDarkGround(node.fill) ? palette.surface : theme.text) : role === "button" && relativeContrast(theme.accent) ? palette.surface : theme.text;
+        operation.fontFamily = "sans";
+      }
     }
     operations.push(...card);
   }
