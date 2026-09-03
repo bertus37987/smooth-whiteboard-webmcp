@@ -449,7 +449,7 @@ export class CollaborationSession {
     return this.respond({ ok: true, planSummary: turn.planSummary, instruction: "Plan published. Apply the edits with the same leaseToken." });
   }
 
-  async apply(operations: CanvasOperation[], baseRevision?: number, leaseToken?: string, signal?: AbortSignal, maxOperations = 160): Promise<AgentResponse> {
+  async apply(operations: CanvasOperation[], baseRevision?: number, leaseToken?: string, signal?: AbortSignal, maxOperations = 160, checkBatchOverlap = true): Promise<AgentResponse> {
     const denied = this.requireWritable(leaseToken); if (denied) return denied;
     if (!Array.isArray(operations) || operations.length === 0) return this.respond({ ok: false, error: "empty_operations", instruction: "Send at least one canvas operation." });
     if (operations.length > maxOperations) return this.respond({ ok: false, error: "too_many_operations", instruction: `Send at most ${maxOperations} operations per call.` });
@@ -467,7 +467,7 @@ export class CollaborationSession {
     if (!preflight.ok) return this.respond({ ok: false, error: preflight.error, ids: preflight.ids, appliedOperations: 0, instruction: preflight.instruction });
     const unknown = this.unknownSymbols(operations);
     if (unknown) return unknown;
-    const collision = this.collisionPreflight(operations);
+    const collision = this.collisionPreflight(operations, checkBatchOverlap);
     if (collision) return collision;
 
     const turn = this.store.document.turn!;
@@ -523,7 +523,7 @@ export class CollaborationSession {
    * The answer names what is in the way and where there is room; the agent then either moves its own
    * content or clears the space with translate. The session never moves anybody's content by itself.
    */
-  private collisionPreflight(operations: CanvasOperation[]): AgentResponse | null {
+  private collisionPreflight(operations: CanvasOperation[], checkBatchOverlap = true): AgentResponse | null {
     // A batch that re-lays out or resizes existing content ends up somewhere this cannot predict,
     // so it is left alone rather than refused on a guess.
     if (operations.some((operation) => RELAYOUT.includes(operation.type))) return null;
@@ -536,7 +536,10 @@ export class CollaborationSession {
     // looked at what was already on the board, never at the batch against itself. Only things that
     // carry words are judged here — overlapping shapes are how a Venn diagram or a stack is drawn,
     // and refusing those would take away a legitimate way to draw.
-    const wordy = planned.filter((entry) => WORD_BEARING.includes(operations[entry.index].type));
+    // A composition's own operations are already ordered by the layout and repair passes; a sequence
+    // self-loop whose label grazes another is not a hand-placed mistake, so this only judges batches
+    // the agent assembled itself.
+    const wordy = checkBatchOverlap ? planned.filter((entry) => WORD_BEARING.includes(operations[entry.index].type)) : [];
     for (const [position, entry] of wordy.entries()) {
       for (const other of wordy.slice(position + 1)) {
         if (!boundsIntersect(entry.bounds, other.bounds)) continue;
@@ -593,7 +596,7 @@ export class CollaborationSession {
     const composed = composeVisualDetailed(input, this.store.agentStyle());
     const { operations, repairs } = this.placeComposition(input, composed.operations, composed.repairs);
     if (!operations.length) return this.respond({ ok: false, error: "empty_visual", instruction: "The visual produced no canvas content. Provide nodes, sections, steps or series." });
-    const applied = await this.apply(operations, baseRevision, leaseToken, signal, 240);
+    const applied = await this.apply(operations, baseRevision, leaseToken, signal, 240, false);
     // Tell the agent what the layout repair had to change, so its next hand-placed edit is better.
     return repairs.length ? { ...applied, repairs } : applied;
   }

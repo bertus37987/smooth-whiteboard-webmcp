@@ -1162,6 +1162,32 @@ async function main(): Promise<void> {
     assert.equal(Math.round(frame.maxX - frame.minX), 440, "the phone stays the width it was asked for");
   }
 
+  /* TEST 53 - a composition with a self-loop is not blocked by the batch-overlap guard. */
+  {
+    const test = harness();
+    test.session.submit({ promptText: "HTTP", instructionInk: [] });
+    const lease = await claim(test);
+    // The self-message (server talks to itself) puts a label near another label; that is the
+    // composer's own layout, not a hand-placed collision, so it must go through.
+    const composed = await test.session.compose({ kind: "sequence", id: "http", title: "How HTTP works",
+      nodes: [{ id: "browser", label: "Browser" }, { id: "server", label: "Server" }],
+      edges: [
+        { fromId: "browser", toId: "server", label: "GET /index.html" },
+        { fromId: "server", toId: "server", label: "look the page up" },
+        { fromId: "server", toId: "browser", label: "200 OK + HTML" }
+      ] }, undefined, lease.leaseToken);
+    assert.equal(composed.ok, true, "a sequence with a self-loop composes instead of being refused");
+    assert.notEqual(composed.error, "batch_overlap", "the batch-overlap guard does not fire on the composer's own output");
+    assert.ok(test.store.document.elements.some((element) => element.type === "text" && element.text.includes("look the page up")), "the self-message is drawn");
+
+    // The guard still fires on a batch the agent assembled itself.
+    const stacked = await test.session.apply([
+      { type: "create_note", id: "z1", x: 2000, y: 0, width: 240, text: "First" },
+      { type: "create_note", id: "z2", x: 2020, y: 30, width: 240, text: "Second" }
+    ], undefined, lease.leaseToken);
+    assert.equal(stacked.error, "batch_overlap", "a hand-placed stack is still caught");
+  }
+
   console.log("collaboration tests: ok");
 }
 
