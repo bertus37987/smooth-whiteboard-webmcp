@@ -271,6 +271,17 @@ export function translateElement(element: PageElement, dx: number, dy: number): 
   else { element.x1 += dx; element.x2 += dx; element.y += dy; element.points?.forEach((point) => { point.x += dx; point.y += dy; }); }
 }
 
+/**
+ * Widens or narrows a text and lets it wrap again, keeping the letters the size they were. Dragging
+ * a side handle should change how far the words run, not how big they are — scaleElement does the
+ * other thing on purpose, for corner handles.
+ */
+export function reflowText(element: Extract<PageElement, { type: "text" }>, width: number, left?: number): void {
+  element.width = Math.max(40, width);
+  if (left !== undefined) element.x = left;
+  element.height = estimateTextHeight(element.text, element.width, element.fontSize, element);
+}
+
 export function scaleElement(element: PageElement, from: { minX: number; minY: number; maxX: number; maxY: number }, to: { minX: number; minY: number; maxX: number; maxY: number }): void {
   const sourceWidth = Math.max(1, from.maxX - from.minX); const sourceHeight = Math.max(1, from.maxY - from.minY);
   const sx = (to.maxX - to.minX) / sourceWidth; const sy = (to.maxY - to.minY) / sourceHeight;

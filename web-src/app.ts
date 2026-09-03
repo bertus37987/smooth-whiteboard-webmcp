@@ -3,7 +3,7 @@ import { InkPoint, beautifyStroke } from "../src/strokes";
 import { optimizeShape } from "../src/shapes";
 import { BoardRenderer, SelectionHandle } from "./renderer";
 import { BoardStore } from "./store";
-import { BoardTool, Bounds, ExplanationSequence, boardBounds, eraseInkElement, erasePolyline, estimateTextHeight, lassoElements, migrateBoard, scaleElement, translateElement } from "./model";
+import { BoardTool, Bounds, ExplanationSequence, boardBounds, eraseInkElement, erasePolyline, estimateTextHeight, lassoElements, migrateBoard, reflowText, scaleElement, translateElement } from "./model";
 import { CollaborationSession } from "./collaboration";
 import { registerWhiteboardTools } from "./webmcp";
 import { EnglishHandwritingAssist } from "./handwriting";
@@ -258,8 +258,15 @@ export class WhiteboardApp {
     }
     if (this.tool === "lasso" || this.tool === "ai-lasso") { this.renderer.lasso = [point]; this.renderer.lassoMode = this.tool === "ai-lasso" ? "ai" : "select"; this.interaction = { mode: "lasso", pointerId: event.pointerId, startClient: { x: event.clientX, y: event.clientY }, startWorld: point, additive: event.shiftKey }; this.renderer.request(); return; }
     if (this.tool === "eraser") { this.interaction = { mode: "erase", pointerId: event.pointerId, startClient: { x: event.clientX, y: event.clientY }, startWorld: point }; this.erase(point); return; }
-    if (this.tool === "text") { this.beginText(point); this.release(event); }
-    else if (this.tool === "sticky") { this.beginText(point, undefined, "body", true); this.release(event); }
+    if (this.tool === "text" || this.tool === "sticky") {
+      // Clicking words you already wrote edits them. Without this the click opened an empty field on
+      // top of them, and one correction later the board carried two texts a few pixels apart.
+      const hit = this.renderer.hit(point);
+      const editable = hit?.type === "text" && !hit.locked ? hit : undefined;
+      if (editable) this.beginText({ x: editable.x, y: editable.baseline - editable.fontSize, pressure: .5 }, editable);
+      else this.beginText(point, undefined, "body", this.tool === "sticky");
+      this.release(event);
+    }
     else if (this.tool === "artboard") {
       this.store.checkpoint(); const shape: ShapeElement = { type: "shape", id: uuid("artboard"), kind: "rectangle", points: [point, { ...point }], color: "#808080", size: 1.5, closed: true, fillColor: "#ffffff", fillOpacity: 1, radius: 24, semanticRole: "artboard", name: "Artboard", artboard: { preset: "custom", backgroundColor: "#ffffff", clipContent: false } };
       this.store.document.elements.push(shape); this.store.document.artboardIds.push(shape.id); this.interaction = { mode: "artboard", pointerId: event.pointerId, startClient: { x: event.clientX, y: event.clientY }, startWorld: point, elementId: shape.id }; this.renderer.request();
@@ -317,7 +324,19 @@ export class WhiteboardApp {
       const from = interaction.beforeBounds; const to = { minX: from.minX, minY: from.minY, maxX: from.maxX, maxY: from.maxY };
       if (interaction.handle.includes("w")) to.minX = Math.min(point.x, to.maxX - 8); if (interaction.handle.includes("e")) to.maxX = Math.max(point.x, to.minX + 8);
       if (interaction.handle.includes("n")) to.minY = Math.min(point.y, to.maxY - 8); if (interaction.handle.includes("s")) to.maxY = Math.max(point.y, to.minY + 8);
-      for (const [id, before] of interaction.before) { const index = this.store.document.elements.findIndex((element) => element.id === id); if (index >= 0) { this.store.document.elements[index] = structuredClone(before); scaleElement(this.store.document.elements[index], from, to); } } this.renderer.request();
+      // One text pulled by a side handle re-wraps; corners still scale, so both remain reachable.
+      const sideOnly = interaction.handle === "e" || interaction.handle === "w";
+      const single = interaction.before.size === 1 ? [...interaction.before.values()][0] : null;
+      if (sideOnly && single?.type === "text") {
+        const index = this.store.document.elements.findIndex((element) => element.id === single.id);
+        if (index >= 0) {
+          const text = structuredClone(single); this.store.document.elements[index] = text;
+          reflowText(text, to.maxX - to.minX, to.minX);
+        }
+      } else {
+        for (const [id, before] of interaction.before) { const index = this.store.document.elements.findIndex((element) => element.id === id); if (index >= 0) { this.store.document.elements[index] = structuredClone(before); scaleElement(this.store.document.elements[index], from, to); } }
+      }
+      this.renderer.request();
     }
   }
 
@@ -444,7 +463,24 @@ export class WhiteboardApp {
     const inset = { x: input.offsetLeft + Number.parseFloat(padding.paddingLeft || "0"), y: input.offsetTop + Number.parseFloat(padding.paddingTop || "0") };
     shell.style.left = `${Math.max(10, Math.min(window.innerWidth - editorWidth - 10, rect.left + screen.x - inset.x))}px`;
     shell.style.top = `${Math.max(10, Math.min(window.innerHeight - editorHeight - 10, rect.top + screen.y - inset.y))}px`;
-    this.textEditorOpen = true; input.focus(); input.select();
+    this.textEditorOpen = true; input.focus();
+    // Opening words you already wrote must not select them: one keystroke would wipe the lot.
+    if (existing) input.setSelectionRange(input.value.length, input.value.length); else input.select();
+
+    // The field grows with what is written in it, until you take the corner and decide yourself.
+    let sizedByHand = false;
+    const grow = (): void => {
+      if (sizedByHand) return;
+      const chrome = shell.getBoundingClientRect().height - input.getBoundingClientRect().height;
+      input.style.height = "0px";
+      const wanted = Math.min(window.innerHeight - 20, input.scrollHeight + chrome);
+      input.style.height = "";
+      shell.style.height = `${Math.max(editorHeight, wanted)}px`;
+    };
+    input.addEventListener("input", grow);
+    // A pointer landing on the shell itself, not on the writing area, is the resize grip.
+    shell.addEventListener("pointerdown", (event) => { if (event.target === shell) sizedByHand = true; });
+    grow();
 
     let committed = false;
     const commit = (): void => {
@@ -462,6 +498,10 @@ export class WhiteboardApp {
       if (existing) {
         const current = this.store.document.elements.find((element) => element.id === existing.id);
         if (current?.type === "text") { current.text = text; current.width = width; current.height = Math.max(contentHeight, estimateTextHeight(text, width, fontSize, style)); }
+        // A longer note text has to take its card with it instead of running out of the bottom.
+        const group = this.store.groupIdFor(existing.id);
+        const card = group ? this.store.document.elements.find((element) => (this.store.document.groups?.[group] ?? []).includes(element.id) && element.type === "shape") : undefined;
+        if (card) this.store.applyOperation({ type: "fit_to_content", id: card.id, mode: "container" }, "human");
       } else if (sticky) {
         const ids = this.store.applyOperation({ type: "create_note", x: point.x, y: point.y, width, height: Math.max(100, contentHeight), text, color, blockStyle }, "human");
         const parentId = this.parentArtboardAt(point)?.id;

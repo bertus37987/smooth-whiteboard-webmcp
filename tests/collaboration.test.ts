@@ -3,7 +3,7 @@ import { CollaborationSession, CollaborationView } from "../web-src/collaboratio
 import { BoardStore } from "../web-src/store";
 import { PageElement, elementBounds } from "../src/document";
 import { readFileSync } from "node:fs";
-import { Bounds, CONNECTOR_LABEL_PADDING, CanvasOperation, annotationKinds, boardBounds, boundsOverlapArea, iconNames, isCanvasOperation, lintBoard, migrateBoard, plannedElementIds, resolveGestureElements } from "../web-src/model";
+import { Bounds, CONNECTOR_LABEL_PADDING, CanvasOperation, annotationKinds, estimateTextHeight, reflowText, boardBounds, boundsOverlapArea, iconNames, isCanvasOperation, lintBoard, migrateBoard, plannedElementIds, resolveGestureElements } from "../web-src/model";
 import { InkPoint } from "../src/strokes";
 import { registerWhiteboardTools } from "../web-src/webmcp";
 
@@ -1070,6 +1070,47 @@ async function main(): Promise<void> {
     assert.equal(refused.operationIndex, 1, "it points at the operation that is wrong");
     assert.equal(refused.operationType, "set_explanation_sequence", "and says what kind it was");
     assert.equal(/keep every coordinate finite\. Nothing was applied\.$/.test(String(refused.instruction)), false, "not the old catch-all sentence");
+  }
+
+  /* TEST 50 - dragging a text sideways re-wraps it; the letters keep their size. */
+  {
+    const text: Extract<PageElement, { type: "text" }> = {
+      type: "text", id: "wide", x: 0, baseline: 40, width: 200, height: 0, fontSize: 20, color: "#080808",
+      text: "Ein Satz der breit genug ist um auf mehrere Zeilen zu laufen wenn das Feld schmal bleibt"
+    };
+    text.height = estimateTextHeight(text.text, text.width, text.fontSize, text);
+    const narrow = { width: text.width, height: text.height, fontSize: text.fontSize };
+
+    reflowText(text, 620);
+    assert.equal(text.width, 620, "the width follows the handle");
+    assert.equal(text.fontSize, narrow.fontSize, "and the letters stay the size they were");
+    assert.ok(text.height < narrow.height, "wider means fewer lines, so it gets shorter");
+    assert.equal(text.height, estimateTextHeight(text.text, 620, text.fontSize, text), "the height is measured, not guessed");
+
+    reflowText(text, 5);
+    assert.ok(text.width >= 40, "a text cannot be dragged to nothing");
+
+    // Left-hand handles move the origin as well, so the right edge stays put.
+    reflowText(text, 300, -120);
+    assert.equal(text.x, -120);
+  }
+
+  /* TEST 51 - the wiring the text field needs, in the places a browser check cannot reach. */
+  {
+    const app = readFileSync("web-src/app.ts", "utf8");
+    assert.ok(/const editable = hit\?\.type === "text" && !hit\.locked \? hit : undefined;/.test(app),
+      "clicking words already on the board opens them instead of starting an empty field on top");
+    assert.ok(app.includes("if (existing) input.setSelectionRange(input.value.length, input.value.length); else input.select();"),
+      "and the caret lands at the end, so the first keystroke does not wipe the text");
+    assert.ok(app.includes('input.addEventListener("input", grow)'), "the field grows with what is written in it");
+    assert.ok(/sideOnly && single\?\.type === "text"/.test(app), "a single text pulled by a side handle re-wraps");
+
+    const css = readFileSync("web/app.css", "utf8");
+    const shellRules = css.match(/\.text-editor-shell\{[^}]*\}/g) ?? [];
+    assert.ok(shellRules.length >= 2, "the editor still has its plain-field override");
+    assert.equal(shellRules.some((rule) => rule.includes("overflow:visible")), false,
+      "nothing sets overflow to visible: without clipping the browser draws no resize grip and resize:both is dead");
+    assert.ok(shellRules.some((rule) => rule.includes("resize:both")), "and the grip is still asked for");
   }
 
   console.log("collaboration tests: ok");
