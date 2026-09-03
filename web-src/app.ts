@@ -698,7 +698,11 @@ export class WhiteboardApp {
     const withdraw = byId<HTMLButtonElement>("withdraw-turn");
     withdraw.hidden = !this.collaboration.canWithdraw();
     const submit = byId<HTMLButtonElement>("submit-turn"); const busy = ["queued", "claimed", "planning", "working", "review"].includes(state);
-    submit.classList.toggle("is-waiting", busy && state !== "review"); submit.disabled = busy;
+    // A new note is allowed to take over a turn no live stream owns; only a running stream or a
+    // proposal awaiting a decision blocks it. Reusing canWithdraw keeps that judgement in one place.
+    const canReclaim = this.collaboration.canWithdraw();
+    submit.classList.toggle("is-waiting", busy && state !== "review" && !canReclaim);
+    submit.disabled = busy && !canReclaim;
     this.syncExplanation(); this.updateZoom(); this.updateContextPrompt();
   }
   private updateZoom(): void { byId<HTMLSpanElement>("zoom").textContent = `${Math.round(this.renderer.camera.zoom * 100)}%`; }
