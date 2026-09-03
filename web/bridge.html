@@ -51,7 +51,7 @@
     document.head.insertAdjacentHTML("beforeend", [...parsed.head.querySelectorAll("link,style")].map((node) => node.outerHTML).join(""));
     document.body.insertAdjacentHTML("beforeend", parsed.body.innerHTML);
     const script = document.createElement("script");
-    script.type = "module"; script.src = "./app.js?bridge=1";
+    script.type = "module"; script.src = "./app.js?bridge=" + Date.now();  // never serve stale JS during a demo
     document.body.appendChild(script);
   });
 </script>
