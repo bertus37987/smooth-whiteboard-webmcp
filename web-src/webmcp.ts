@@ -15,7 +15,10 @@ interface ToolDefinition {
 interface ModelContext {
   registerTool(tool: ToolDefinition, options?: { signal?: AbortSignal }): Promise<void> | void;
 }
-declare global { interface Document { modelContext?: ModelContext } }
+declare global {
+  interface Document { modelContext?: ModelContext }
+  interface Navigator { modelContext?: ModelContext }
+}
 
 export interface WebMcpHost {
   session(): Record<string, unknown>;
@@ -88,8 +91,7 @@ const compositionSchema = {
 
 const scope = (value: unknown): ContextScope | undefined => value === "selection" || value === "priority" || value === "all" ? value : undefined;
 
-export async function registerWhiteboardTools(host: WebMcpHost, signal: AbortSignal): Promise<boolean> {
-  const context = document.modelContext; if (!context) return false;
+async function attachTools(host: WebMcpHost, signal: AbortSignal, context: ModelContext): Promise<boolean> {
   /**
    * Every tool answers, even when it breaks. A thrown error used to reject the call and leave the
    * agent mid-turn with nothing to act on; now it comes back as an ordinary refusal it can read.
@@ -169,4 +171,42 @@ export async function registerWhiteboardTools(host: WebMcpHost, signal: AbortSig
     execute: (input) => result(host.complete(String(input.summary ?? "Contribution finished"), token(input.leaseToken)))
   });
   return true;
+}
+
+/**
+ * Hosts have shipped the entry point on both surfaces, so accept either one rather than
+ * betting on the spelling a given browser happens to use.
+ */
+const findContext = (): ModelContext | undefined => document.modelContext ?? navigator.modelContext;
+
+/**
+ * Registers the tools, and keeps looking if no host is there yet.
+ *
+ * A page-load-only check is wrong for in-app browsers: several of them only inject the host
+ * once their agent actually attaches, which can be long after this script ran. Deciding "no
+ * agent, ever" at that moment would leave the board permanently inert for the very users it
+ * is built for. So: report the honest answer immediately, then keep watching and connect the
+ * moment a host shows up.
+ *
+ * @param onConnect called if a host appears only after the initial answer was already given.
+ */
+export async function registerWhiteboardTools(host: WebMcpHost, signal: AbortSignal, onConnect?: () => void): Promise<boolean> {
+  let attached = false;
+  let busy = false;
+  const tryAttach = async (): Promise<boolean> => {
+    if (attached || busy) return attached;
+    const context = findContext(); if (!context) return false;
+    busy = true;
+    try { attached = await attachTools(host, signal, context); }
+    catch (error) { console.error("WebMCP tool registration failed", error); }
+    finally { busy = false; }
+    return attached;
+  };
+  if (await tryAttach()) return true;
+  const timer = setInterval(() => {
+    if (signal.aborted) { clearInterval(timer); return; }
+    void tryAttach().then((ok) => { if (ok) { clearInterval(timer); onConnect?.(); } });
+  }, 800);
+  signal.addEventListener("abort", () => clearInterval(timer), { once: true });
+  return false;
 }

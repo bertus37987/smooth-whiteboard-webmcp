@@ -118,8 +118,8 @@ export class WhiteboardApp {
       apply: (operations, revision, lease, signal) => this.collaboration.apply(operations, revision, lease, signal),
       compose: (input, revision, lease, signal) => this.collaboration.compose(input, revision, lease, signal),
       complete: (summary, lease) => this.collaboration.complete(summary, lease)
-    }, this.abort.signal)
-      .then((available) => { this.agentAvailable = available; this.setStatus(available ? "WebMCP ready" : "Browser without WebMCP – drawing remains available", 2600); })
+    }, this.abort.signal, () => { this.agentAvailable = true; this.setStatus("Agent connected – WebMCP ready", 2600); })
+      .then((available) => { this.agentAvailable = available; this.setStatus(available ? "WebMCP ready" : "No agent connected yet – drawing works, and the board connects the moment one attaches", 3600); })
       .catch(() => this.setStatus("WebMCP tools could not be registered", 2600));
   }
 
